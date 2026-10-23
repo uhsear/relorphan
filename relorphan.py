@@ -11,7 +11,9 @@ A feature class in a geodatabase can have an attachment table, named with the
 suffix __ATTACH, whose REL_GLOBALID column holds the GlobalID of the parent
 feature. When a parent feature is deleted by a route that skips the
 relationship class (a SQL delete, a truncate and reload, an append that mints
-new GlobalIDs), its attachment rows stay behind, and so do their photos.
+new GlobalIDs), its attachment rows can stay behind, and so can their photos.
+That is the failure this tool looks for. The README says which parts of that
+story were checked against Esri documentation and which were not.
 
 The obvious tools already do the join. A SQL anti-join (LEFT JOIN ... WHERE
 parent IS NULL, or NOT EXISTS) finds the rows exactly, and on a uniqueidentifier
@@ -92,15 +94,21 @@ KEY_BAD = "bad"
 # A GUID is 32 hex digits, written bare (.NET format N) or in the 8-4-4-4-12
 # groups (format D). Braces (format B) and parentheses (format P) wrap either
 # form. Only the ASCII digits 0-9 count.
-_DASHED = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}"
-                     r"-[0-9a-f]{12}$", re.IGNORECASE)
-_BARE = re.compile(r"^[0-9a-f]{32}$", re.IGNORECASE)
+# Matched with fullmatch, not "$": "$" also matches before a final line break,
+# so "{guid<LF>}" would pass as a GUID whose canonical form ends in a newline.
+_DASHED = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}"
+                     r"-[0-9a-f]{12}", re.IGNORECASE)
+_BARE = re.compile(r"[0-9a-f]{32}", re.IGNORECASE)
 _WRAPPERS = {"{": "}", "(": ")"}
 
-_DIGITS = re.compile(r"^[0-9]+$")
+# At most 18 digits, so a byte count fits a 64 bit integer. A longer cell is
+# unreadable on every Python: int() refuses more than 4300 digits on 3.11 and
+# later, and would raise outside the column-error handler.
+_DIGITS = re.compile(r"[0-9]{1,18}")
 
 # The columns --out writes: one row per child row that is not LINKED.
 OUT_COLUMNS = ("csv_line", "row_id", "raw_key", "class", "size", "reason")
+OUT_HEADER = ",".join(OUT_COLUMNS)
 
 Child = collections.namedtuple("Child", "line raw row_id size_text")
 Result = collections.namedtuple("Result", "child key cls size reason")
@@ -130,7 +138,7 @@ def normalize_guid(text):
         if value[-1] != closer:
             return None, KEY_BAD
         value = value[1:-1]
-    if not (_DASHED.match(value) or _BARE.match(value)):
+    if not (_DASHED.fullmatch(value) or _BARE.fullmatch(value)):
         return None, KEY_BAD
     digits = value.replace("-", "").lower()
     if digits == "0" * 32:
@@ -140,9 +148,10 @@ def normalize_guid(text):
 
 
 def to_size(text):
-    """A byte count from a cell, or None when it is not a plain integer."""
+    """A byte count from a cell, or None when it is not a plain integer of at
+    most 18 digits."""
     value = text.strip()
-    return int(value) if _DIGITS.match(value) else None
+    return int(value) if _DIGITS.fullmatch(value) else None
 
 
 class Report(object):
@@ -329,23 +338,41 @@ def findings_rows(report):
 
 # ------------------------------------------------------------------------- I/O
 
+def _no_nul(handle):
+    """Yield the lines of handle, and raise csv.Error on a NUL byte.
+
+    The csv module reads a NUL as data on Python 3.11 and later and refuses it
+    on 3.9 and 3.10. A UTF-16 file is full of them. This makes the answer the
+    same on every version: the file is unreadable, exit 2.
+    """
+    for line in handle:
+        if "\0" in line:
+            raise csv.Error("line contains NUL")
+        yield line
+
+
 def read_csv(path):
     """Return (header, [(start_line, record), ...]). Blank lines are skipped.
 
     start_line is the line the record begins on, so a quoted cell that holds a
-    line break does not move the numbers that follow it.
+    line break does not move the numbers that follow it. The reader is strict:
+    a quote that is opened and never closed would otherwise swallow the rest of
+    the file as one cell, and the rows after it would silently not exist.
     """
     header = None
     records = []
     with io.open(path, "r", encoding="utf-8-sig", errors="replace",
                  newline="") as handle:
-        reader = csv.reader(handle)
+        reader = csv.reader(_no_nul(handle), strict=True)
         while True:
             start = reader.line_num + 1
             try:
                 record = next(reader)
             except StopIteration:
                 break
+            except csv.Error as exc:
+                raise csv.Error("%s: the record that starts on line %d: %s"
+                                % (path, start, exc))
             if not record:
                 continue
             if header is None:
@@ -399,6 +426,24 @@ def load_children(path, args):
         size_text = cells.pop(0) if args.size_field else ""
         children.append(Child(row[0], raw, row_id, size_text))
     return children
+
+
+def may_replace(path):
+    """True when --out can be written without destroying somebody's file.
+
+    That is a path with nothing at it, an empty file, or a findings file from
+    an earlier run of this tool. Any other file, an input table reached by a
+    hard link or a symbolic link included, is refused.
+    """
+    if not os.path.exists(path):
+        return True
+    try:
+        with io.open(path, "r", encoding="utf-8-sig", errors="replace",
+                     newline="") as handle:
+            head = handle.readline(len(OUT_HEADER) + 8)
+    except (IOError, OSError):
+        return False
+    return head == "" or head.rstrip("\r\n") == OUT_HEADER
 
 
 def write_findings(path, report):
@@ -489,6 +534,8 @@ def _self_test(tmp):
           "a lower case hyphenated GUID is its own canonical form")
     check(normalize_guid(g1.upper()) == (g1, KEY_OK),
           "an upper case GUID is the same id")
+    check(normalize_guid(g1.replace("-", "").upper()) == (g1, KEY_OK),
+          "a bare upper case GUID is the same id")
     check(normalize_guid(braced % g1.upper()) == (g1, KEY_OK),
           "a braced upper case GlobalID is the same id as the bare lower "
           "case one  <-- pinned defect")
@@ -523,6 +570,7 @@ def _self_test(tmp):
         ("{{" + g1 + "}}", "a doubly braced GUID"),
         ("9f1c2a643-b7d-4e58-8a01-5c6d7e8f9a0b", "hyphens in the wrong places"),
         (g1.replace("-", "")[:-1], "31 bare hex digits"),
+        (g1.replace("-", "") + "0", "33 bare hex digits"),
         ("{0x9f1c2a64,0x3b7d,0x4e58,{0x8a,0x01,0x5c,0x6d,0x7e,0x8f,0x9a,"
          "0x0b}}", "the .NET format X, which no geodatabase writes"),
         (g1.replace("-", " ", 1), "a space where a hyphen belongs"),
@@ -530,10 +578,17 @@ def _self_test(tmp):
                              "read as 9"),
         ("104", "an ObjectID in a GlobalID column"),
         ("{}", "empty braces"),
+        ("{ %s }" % g1, "spaces inside the braces, which are not the spaces "
+                        "around the cell"),
+        ("{" + g1 + "\n}", "a line break inside the braces, which a "
+                           "dollar-anchored pattern would let through"),
+        (g1.replace("-", "")[:16] + "\n" + g1.replace("-", "")[16:],
+         "a line break inside a bare GUID"),
         ("{", "a single brace"),
     ]
     for cell, label in bad_cells:
-        pin = "  <-- pinned defect" if cell == g1 + "x" else ""
+        pin = ("  <-- pinned defect"
+               if cell in (g1 + "x", "{" + g1 + "\n}") else "")
         check(normalize_guid(cell) == (None, KEY_BAD),
               "%s is malformed%s" % (label, pin))
 
@@ -541,9 +596,17 @@ def _self_test(tmp):
     check(to_size("2400000") == 2400000, "a plain byte count is read")
     check(to_size(" 12 ") == 12, "a byte count with spaces is read")
     check(to_size("0") == 0, "zero bytes is a size, not a missing one")
-    for cell in ("", "1,024", "12.5", "-5", u"\u0663", "n/a"):
+    for cell in ("", "1,024", "12.5", "2400000.0", "-5", u"\u0663", "n/a",
+                 "1" * 19):
         check(to_size(cell) is None,
               "the size %a is unknown, never guessed" % cell)
+    check(to_size("9" * 18) == 10 ** 18 - 1,
+          "a size of 18 digits is the longest that is read")
+    check(to_size("1" * 4301) is None,
+          "a size of 4301 digits is unknown and does not raise, where int() "
+          "refuses it on Python 3.11 and later  <-- pinned defect")
+    check(to_size("12\n") == 12 and to_size("1\n2") is None,
+          "a line break inside a size makes it unknown")
 
     # ---- the core, on the layout of the README demo
     parents = [(2, braced % g1.upper()), (3, braced % g2.upper()),
@@ -726,6 +789,29 @@ def _self_test(tmp):
     check(NO_PARENTS in refused_empty and "parent line" not in refused_empty,
           "an empty parent table is refused with its own message")
 
+    # Lines that must not appear, and counts that must be the right count.
+    all_orphans = "\n".join(describe(reconcile(parents, [ch(2, gone),
+                                                         ch(3, gone)])))
+    check("NOTE" not in all_orphans and "ORPHAN     2" in all_orphans,
+          "a run where every child is an orphan gets no note about "
+          "ObjectIDs, because its keys were read as GUIDs and matched  "
+          "<-- pinned defect")
+    check("NOTE" not in "\n".join(describe(reconcile(parents, []))),
+          "a run with no child rows gets no note about ObjectIDs  "
+          "<-- pinned defect")
+    check("parents: 4 row(s), every GlobalID readable" in text
+          and "parents: 4 row(s)" in "\n".join(describe(reconcile(
+              parents, [ch(2, g1)]))),
+          "the parents line counts parent rows, not child rows  "
+          "<-- pinned defect")
+    three = [ch(i, "{%08x-0000-4000-8000-000000000000}" % i) for i in (1, 2, 3)]
+    exact_cut = describe(reconcile(parents, three), 3)
+    check(sum(1 for l in exact_cut if l.startswith("  line ")) == 3
+          and not any("more" in l for l in exact_cut),
+          "a list that is exactly --sample rows long does not say it is "
+          "missing 0 more  <-- pinned defect")
+    check(DEFAULT_SAMPLE == 10, "the default sample is 10 rows")
+
     rows = findings_rows(report)
     check(len(rows) == 4 and rows[0] == (5, "4", "{%s}" % gone.upper(),
                                          ORPHAN, 3500000,
@@ -858,6 +944,54 @@ def _self_test(tmp):
                                 "was")
     code, out, err = cli(assets, photos, "--out", assets)
     check(code == 64, "the same refusal applies on a dry run")
+
+    # --out may replace nothing but an empty file or an earlier findings file.
+    notes = put("notes.txt", "precious\n")
+    for extra in ((), ("--apply",)):
+        code, out, err = cli(assets, photos, "--out", notes, *extra)
+        check(code == 64 and "already exists and is not an empty file" in err
+              and out == "" and read(notes) == "precious\n",
+              "--out naming some other existing file is refused, on a dry run "
+              "too, and the file keeps its content  <-- pinned defect")
+    hard = os.path.join(tmp, "hard.csv")
+    os.link(assets, hard)
+    code, out, err = cli(assets, photos, "--out", hard, "--apply")
+    check(code == 64 and out == "" and read(assets) == keep,
+          "--out that is a hard link to an input table is refused, which a "
+          "comparison of paths cannot see  <-- pinned defect")
+    folder = os.path.join(tmp, "folder")
+    os.mkdir(folder)
+    code, out, err = cli(assets, photos, "--out", folder, "--apply")
+    check(code == 64 and out == "", "--out naming a folder is refused")
+    check(may_replace(os.path.join(tmp, "nothing-here.csv")),
+          "a path with nothing at it may be written")
+    check(may_replace(put("zero.csv", "")),
+          "an empty file may be replaced")
+    check(may_replace(put("crlf-findings.csv", OUT_HEADER + "\r\nrow\r\n"))
+          and may_replace(put("bom-findings.csv", u"\ufeff" + OUT_HEADER
+                              + "\n")),
+          "a findings file saved again by a spreadsheet, with CRLF or a BOM, "
+          "may be replaced")
+    check(not may_replace(put("blank-first.csv", "\n" + OUT_HEADER + "\n")),
+          "a file that opens with a blank line is not an empty file")
+    code, out, err = cli(assets, photos, "--out", target, "--apply")
+    again = read(target)
+    check(code == 1 and out.endswith("\nwrote %s\n" % target)
+          and again.splitlines()[0] == OUT_HEADER
+          and len(again.splitlines()) == 5 and again != written,
+          "--out may replace the findings file an earlier run wrote, so a "
+          "scheduled job can reuse one path")
+    check(_same_file(os.path.join(tmp, "a.csv"), os.path.join(tmp, "b.csv"))
+          is False, "two paths with nothing in common are not the same file")
+    real_realpath = os.path.realpath
+    try:
+        os.path.realpath = lambda p: assets if p == "link-to-assets" else p
+        check(_same_file("link-to-assets", assets)
+              and not _same_file("link-to-photos", assets),
+              "a path is compared after its links are resolved  "
+              "<-- pinned defect")
+    finally:
+        os.path.realpath = real_realpath
     code, out, err = cli(assets)
     check(code == 64 and "two CSV tables are required" in err,
           "one table is a usage error")
@@ -869,6 +1003,21 @@ def _self_test(tmp):
     code, out, err = cli(assets, photos, "--sample", "1")
     check(code == 1 and "  ... and 1 more" in out,
           "--sample 1 cuts the orphan list at one row")
+    code, out, err = cli(assets, photos, "--sample", "0")
+    check(code == 1 and err == "" and "  ... and 2 more" in out
+          and not any(l.startswith("  line ") for l in out.splitlines()),
+          "--sample 0 is accepted on the command line and lists no rows  "
+          "<-- pinned defect")
+    twelve = put("twelve.csv", "REL_GLOBALID\n" + "".join(
+        "{%08x-0000-4000-8000-000000000000}\n" % i for i in range(1, 13)))
+    code, out, err = cli(assets, twelve)
+    check(code == 1 and "  ... and 2 more" in out
+          and sum(1 for l in out.splitlines() if l.startswith("  line ")) == 10,
+          "with no --sample, 10 rows are listed under a heading")
+    code, out, err = cli(assets, photos, "--child-field", " REL_GLOBALID ")
+    check(code == 1 and "rows classified: 8 of 8" in out and err == "",
+          "a column name given with spaces around it still finds the column"
+          "  <-- pinned defect")
     code, out, err = cli("--help")
     check(code == 0 and "--apply" in out and "usage: relorphan.py" in out,
           "--help prints the usage and exits 0")
@@ -895,6 +1044,65 @@ def _self_test(tmp):
     code, out, err = cli(big, photos)
     check(code == 2 and "field larger than field limit" in err,
           "a cell over the csv limit exits 2, not a crash")
+    quote = put("quote.csv",
+                'ATTACHMENTID,REL_GLOBALID,ATT_NAME\n1,%s,"unclosed.jpg\n'
+                "2,%s,x\n3,%s,y\n" % (g1, gone, gone))
+    code, out, err = cli(assets, quote)
+    check(code == 2 and out == "" and "quote.csv" in err
+          and "the record that starts on line 2" in err,
+          "a quote that is opened and never closed exits 2 and names the "
+          "line, instead of reading the rest of the file as one cell and "
+          "printing clean  <-- pinned defect")
+    nul = put_bytes("nul.csv", b"REL_GLOBALID\n" + g1.encode("ascii")
+                    + b"\x00\n")
+    code, out, err = cli(assets, nul)
+    check(code == 2 and out == "" and "line contains NUL" in err,
+          "a NUL byte exits 2 on every Python version, not 2 on 3.10 and "
+          "a quiet MALFORMED row on 3.11  <-- pinned defect")
+    utf16 = put_bytes("utf16.csv", u"REL_GLOBALID\n".encode("utf-16"))
+    code, out, err = cli(assets, utf16)
+    check(code == 2 and "line contains NUL" in err,
+          "a UTF-16 file exits 2 on every Python version")
+    code, out, err = cli(put_bytes("zero-bytes.csv", b""), photos)
+    check(code == 64 and "no column named GLOBALID" in err
+          and "(no columns)" in err,
+          "an empty parent file is a missing column, exit 64")
+    semi = put("semi.csv", "ATTACHMENTID;REL_GLOBALID\n1;%s\n" % g1)
+    code, out, err = cli(assets, semi)
+    check(code == 64 and "no column named REL_GLOBALID" in err
+          and "It has: ATTACHMENTID;REL_GLOBALID" in err,
+          "a semicolon delimited file is one column and exits 64, never "
+          "clean")
+    nl_cell = '"{%s\n}"' % g1
+    code, out, err = cli(put("nl-parent.csv", "GlobalID\n%s\n" % nl_cell),
+                         put("nl-child.csv", "REL_GLOBALID\n%s\n" % g1))
+    check(code == 3 and "VERDICT: REFUSED" in out,
+          "a parent key with a line break inside its braces refuses the run, "
+          "so a real child is never called an orphan of it  "
+          "<-- pinned defect")
+    code, out, err = cli(assets, put("nl-child2.csv",
+                                     "REL_GLOBALID\n%s\n" % nl_cell))
+    check(code == 1 and "  MALFORMED  1" in out and "  ORPHAN     0" in out,
+          "a child key with a line break inside its braces is malformed")
+    hugesize = put("hugesize.csv", "REL_GLOBALID,DATA_SIZE\n%s,%s\n"
+                   % (gone, "1" * 4301))
+    code, out, err = cli(assets, hugesize, "--size-field", "DATA_SIZE")
+    check(code == 1 and "1 row(s) had no readable size" in out
+          and "Traceback" not in err,
+          "a size cell of 4301 digits is counted as unreadable and does not "
+          "crash the run  <-- pinned defect")
+    trail = put("trail.csv", "REL_GLOBALID,N\n%s,1\n,,\n" % g1)
+    code, out, err = cli(assets, trail)
+    check(code == 1 and "  UNKEYED    1" in out,
+          "a row of empty cells in the child file is an unkeyed row")
+    code, out, err = cli(put("trail-parent.csv", "GlobalID,N\n%s,1\n,,\n"
+                             % g1), photos)
+    check(code == 3 and "parent line 3: ''" in out,
+          "a row of empty cells in the parent file refuses the run")
+    zwsp = put("zwsp.csv", u"REL_GLOBALID\n\u200b%s\n" % g1)
+    code, out, err = cli(assets, zwsp)
+    check(code == 1 and "  MALFORMED  1" in out,
+          "a zero width space around a key makes it malformed, never clean")
     code, out, err = cli(assets, photos, "--out",
                          os.path.join(tmp, "no-such-dir", "f.csv"), "--apply")
     check(code == 2 and "could not write" in err
@@ -1213,6 +1421,11 @@ def _run(argv):
                 print("error: --out %s is also an input table. Name a new "
                       "file." % args.out, file=sys.stderr)
                 return 64
+        if not may_replace(args.out):
+            print("error: --out %s already exists and is not an empty file "
+                  "or a findings file from this tool. Name a new file."
+                  % args.out, file=sys.stderr)
+            return 64
 
     try:
         parents = load_parents(args.parent, args)
