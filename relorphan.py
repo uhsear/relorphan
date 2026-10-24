@@ -352,7 +352,10 @@ def _no_nul(handle):
 
 
 def read_csv(path):
-    """Return (header, [(start_line, record), ...]). Blank lines are skipped.
+    """Return (header, [(start_line, record), ...]).
+
+    A blank line is skipped, except in a one-column file. There it is a row
+    whose only cell is empty, which is how an export writes a NULL key.
 
     start_line is the line the record begins on, so a quoted cell that holds a
     line break does not move the numbers that follow it. The reader is strict:
@@ -374,7 +377,9 @@ def read_csv(path):
                 raise csv.Error("%s: the record that starts on line %d: %s"
                                 % (path, start, exc))
             if not record:
-                continue
+                if header is None or len(header) != 1:
+                    continue
+                record = [""]
             if header is None:
                 header = record
             else:
@@ -669,6 +674,12 @@ def _self_test(tmp):
           "an orphan whose size is unreadable is counted apart, not as zero; "
           "a linked row's size is never added")
 
+    zero = reconcile(parents, [ch(2, gone, "1", "0"), ch(3, "", "2", "0")],
+                     True)
+    check(zero.unsized == 0 and zero.bytes == 0 and zero.findings() == 2,
+          "a real zero-byte orphan is sized as zero, not as unreadable  "
+          "<-- pinned defect")
+
     # Parent side: what makes a run unable to prove an orphan.
     empty_parent = reconcile([], children)
     check(empty_parent.refused == [NO_PARENTS] and not empty_parent.results
@@ -919,6 +930,8 @@ def _self_test(tmp):
           and "7,6,,UNKEYED,900000,the key is blank" in written
           and "LINKED" not in written,
           "--apply writes the four findings and no linked row")
+    check(chr(13) not in written and written.count(chr(10)) == 5,
+          "the findings file ends every line with LF, on every platform")
     for flag in ("--ap", "--app", "--appl"):
         stray = os.path.join(tmp, "stray%s.csv" % flag[2:])
         code, out, err = cli(assets, photos, "--out", stray, flag)
@@ -1150,6 +1163,27 @@ def _self_test(tmp):
     check(code == 1 and "line 5, id 2: no parent row" in out,
           "an orphan after a quoted line break and a blank line is reported "
           "on the line it is on  <-- pinned defect")
+
+    # A blank line in a one-column export is a NULL key, not a gap.
+    nullkey = put("nullkey.csv", "REL_GLOBALID\n%s\n\n%s\n" % (g1, g1))
+    code, out, err = cli(assets, nullkey)
+    check(code == 1 and "UNKEYED" in out and "line 3: the key is blank" in out,
+          "a blank line in a one-column child file is an UNKEYED row, not "
+          "a clean run  <-- pinned defect")
+    check(read_csv(nullkey)[1][1] == (3, [""]),
+          "a blank line in a one-column file reads as one empty cell on its "
+          "own line  <-- pinned defect")
+    code, out, err = cli(assets, put("nullonly.csv", "REL_GLOBALID\n\n"))
+    check(code == 1 and "1 row(s)" in out,
+          "a one-column child file of only a blank line is one UNKEYED row, "
+          "not NOTHING COMPARED  <-- pinned defect")
+    code, out, err = cli(put("nullparent.csv", "GlobalID\n%s\n\n" % g1),
+                         nullkey)
+    check(code == 3 and "REFUSED" in out,
+          "a blank line in a one-column parent file refuses the run  "
+          "<-- pinned defect")
+    check(read_csv(put("blankhead.csv", "\n\nA\n1\n")) == (["A"], [(4, ["1"])]),
+          "blank lines before the header of a one-column file are not rows")
 
     # ---- crash handling and the console
     real_run = globals()["_run"]
@@ -1459,6 +1493,9 @@ def _run(argv):
             # was found". A write that failed is a different fact.
             try:
                 write_findings(args.out, report)
+            # ponytail: csv.Error is not reachable offline here (the writer
+            # only raises it for an unusable dialect), and OSError alone
+            # would pass the self-test. It stays as a guard against a 3.x change.
             except (IOError, OSError, csv.Error) as exc:
                 print("error: could not write %s: %s" % (args.out, exc),
                       file=sys.stderr)

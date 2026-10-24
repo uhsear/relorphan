@@ -74,12 +74,14 @@ PASS  a child table with no rows exits 4, not 0: a failed export looks the same 
 ...
 PASS  --ap is refused with exit 64 and writes nothing, so a prefix of --apply never applies  <-- pinned defect
 ...
+PASS  a blank line in a one-column child file is an UNKEYED row, not a clean run  <-- pinned defect
+...
 PASS  importing the module prints nothing and exposes the core
 --------------------------------------------------------------------
-149 assertions, 0 failed
+196 assertions, 0 failed
 ```
 
-The full run prints all 149 assertions. Each `...` line above is where this block is cut.
+The full run prints all 196 assertions. Each `...` line above is where this block is cut.
 
 ## What already exists
 
@@ -106,7 +108,8 @@ community reports that FME 2019 added a "Strip braces" option to its File and SD
 readers ([thread](https://community.safe.com/architecture-14/uuid-braces-missing-10436)). That
 fixes the spelling inside an FME workspace. It does not look for orphans.
 
-A search of GitHub on 2026-10-22 found no repository named `relorphan`. The searches
+A search of GitHub on 2026-10-22 found no repository named `relorphan`. That repository now
+exists under this name, so a search today returns it. The searches
 `orphan attachments` and `orphaned attachments` returned WordPress, Obsidian and Zotero tools and
 nothing for geodatabase attachment tables. The searches `arcgis orphaned attachments`,
 `geodatabase orphan attachment REL_GLOBALID`, `arcpy attachments orphan`,
@@ -121,11 +124,12 @@ Python 3.9 or newer and nothing else. No `arcpy`, no third-party package, no net
 database. Both tables are CSV files, which every table can be exported as. The self-test also
 needs the `sqlite3` module from the standard library. The tool itself does not.
 
-The self-test prints the same 149 assertions, line for line, on Windows (Python 3.13.2) and on
+The self-test prints the same 196 assertions, line for line, on Windows (Python 3.13.2) and on
 Ubuntu (Python 3.12.3). `coverage run --branch relorphan.py --self-test` reports 100 percent of
 lines and branches on Windows. Coverage was not measured on Linux, which has no `coverage`
-module. Python 3.9 was not available. The self-test parses the source with the 3.9
-grammar (`ast.parse(..., feature_version=(3, 9))`), which proves the syntax and nothing else.
+module. The self-test also ran green on Python 3.9.25 (`uv run --python 3.9 python relorphan.py
+--self-test` on the Ubuntu host), with the same 196 assertions. It parses the source with the 3.9
+grammar as well (`ast.parse(..., feature_version=(3, 9))`).
 
 ```
 git clone https://github.com/uhsear/relorphan.git
@@ -164,8 +168,9 @@ Every flag must be spelled in full. The parser sets `allow_abbrev=False`, so `--
 with exit 64 instead of being read as `--apply`. The self-test pins this for `--ap`, `--app` and
 `--appl`, and checks that no file appears.
 
-`--out` must name a new file. A path that is also an input table is refused with exit 64, on a
-dry run too. Without that check `--apply` would replace a table with its own findings.
+`--out` may name a path that does not exist, an empty file, or a findings file from an earlier run
+of this tool. Any other existing file is refused with exit 64, and so is a path that is also an
+input table, on a dry run too. Without that check `--apply` would replace a table with its own findings.
 
 ## What it checks
 
@@ -330,8 +335,7 @@ OBJECTID,GlobalID,CULVERT_NO
 4,{AAAABBBB-CCCC-4DDD-8EEE-FFFF00001111},C-104
 ```
 
-`photos.csv` is the child table. Row 1 is bare and lower case. Row 3 has no hyphens. Row 8 is
-bare. Rows 4 and 5 point at a culvert that is not in `assets.csv`. Row 6 has no key. Row 7 holds
+`photos.csv` is the child table. Rows 1 and 8 are hyphenated and lower case. Row 3 is bare, with no hyphens. Rows 4 and 5 point at a culvert that is not in `assets.csv`. Row 6 has no key. Row 7 holds
 an ObjectID where a GlobalID belongs.
 
 ```
@@ -357,10 +361,10 @@ header. `photos-objectid.csv` is the header and two rows, `1,1,c101_a.jpg,240000
 |---|---|
 | 0 | At least one child row was read, and every child row has a parent. |
 | 1 | At least one child row is an orphan, has no key, or has a key that is not a GUID. |
-| 2 | A file could not be read, or `--out` could not be written. |
+| 2 | A file could not be read, or `--out` could not be written. A file with a NUL byte, such as a UTF-16 file, is unreadable. |
 | 3 | Refused. The parent table is empty or has a row with no readable GlobalID. |
 | 4 | Nothing was compared. The child table has no rows. |
-| 64 | Usage error, including a column name that is not in the CSV, an unknown or abbreviated flag, and an output path that is an input. |
+| 64 | Usage error, including a column name that is not in the CSV, an unknown or abbreviated flag, an output path that is an input, and an output path that is an existing file other than an empty file or an earlier findings file. |
 | 70 | An unexpected crash. This is a fault in the tool and not a finding. The traceback is on stderr. |
 
 Exit 3 is not exit 1. A job that files a ticket for "photos have no parent" must not file one
@@ -373,12 +377,12 @@ I read these pages on 2026-10-22. Where a page refused the fetch, the table says
 
 | Claim in this README | Source | How it was checked |
 |---|---|---|
-| An attachment table is named with the dataset name plus `__ATTACH`. Its relationship class ends in `__ATTACHREL`. Global IDs are checked by default. | [Enable attachments](https://doc.esri.com/en/arcgis-pro/latest/help/data/geodatabases/overview/enable-attachments.html) | Fetched and read. |
+| An attachment table is named with the dataset name plus `__ATTACH`. Its relationship class ends in `__ATTACHREL`. The page does not state a default for the Global IDs option. | [Enable attachments](https://doc.esri.com/en/arcgis-pro/latest/help/data/geodatabases/overview/enable-attachments.html) | Fetched and read. |
 | Global ID and GUID values are "registry-style strings consisting of 36 characters enclosed in curly brackets". | [Inserting a value into a global ID column in SQL Server](https://desktop.arcgis.com/en/arcmap/latest/manage-data/using-sql-with-gdbs/inserting-a-value-into-a-global-id-column-in-sql-server-using-sql.htm) (ArcMap help) | Fetched and read. |
 | GlobalIDs from an enterprise geodatabase carry braces and capital letters. GlobalIDs from a hosted layer carry neither. | [Global IDs - The More You Know](https://sspinnovations.com/blog/global-ids-the-more-you-know/) | Fetched and read. This is a third-party post. |
 | Esri's own article makes the same point for Portal for ArcGIS and ArcGIS Online. | [Esri support article 000026830](https://support.esri.com/en-us/knowledge-base/how-to-remove-curly-braces-from-the-globalids-in-a-text-000026830) | The page returned 403 to my fetch. I read only a search result summary of it. Treat it as unverified. |
 | An attachment table gets a `REL_GLOBALID` field when its parent has a GlobalID field. | [Esri support article 000015632](https://support.esri.com/en/technical-article/000015632) | The page returned 403 to my fetch. I read only a search result summary. Treat it as unverified. |
-| The .NET `Guid` formats are N (32 digits), D (hyphens), B (braces), P (parentheses) and X. Digits are written in lower case. | [Guid.ToString](https://learn.microsoft.com/en-us/dotnet/api/system.guid.tostring) | Fetched and read. |
+| The .NET `Guid` formats are N (32 digits), D (hyphens), B (braces), P (parentheses) and X. | [Guid.ToString](https://learn.microsoft.com/en-us/dotnet/api/system.guid.tostring) | Fetched and read. The page does not say the digits are lower case. That comes from observed output. |
 | SQL Server `uniqueidentifier` is a 16-byte GUID. It has comparison operators. A string longer than 36 characters is cut to 36 on conversion. | [uniqueidentifier](https://learn.microsoft.com/en-us/sql/t-sql/data-types/uniqueidentifier-transact-sql) | Fetched and read. Not run: no SQL Server was available. |
 | FME 2019 added a "Strip braces" reader option for geodatabases. | [Safe Software thread](https://community.safe.com/architecture-14/uuid-braces-missing-10436) | Fetched and read. |
 
@@ -439,8 +443,8 @@ network module is ever imported.
   7.0 seconds and 632 MB of memory on the Ubuntu host, and 9.7 seconds on the Windows
   workstation. It found the 20,000 orphans planted in the generated files, and no others. The
   Windows memory use was not measured. These figures come from one workstation and one server.
-- Only UTF-8 CSV is supported. Other encodings are decoded lossily without a warning, and a UTF-16
-  file is rejected only because its column names are garbled, with exit 64. In Excel, save as
+- Only UTF-8 CSV is supported. Other encodings are decoded lossily without a warning, except that a
+  file with a NUL byte, UTF-16 included, exits 2 with "line contains NUL". In Excel, save as
   "CSV UTF-8 (Comma delimited)".
 - A cell over 131072 characters exits 2, because that is the csv module's limit.
 - A key that starts with `=`, `+`, `-` or `@` is written to `--out` as it came. Open the file as
@@ -452,7 +456,54 @@ network module is ever imported.
 - `--self-test` ignores every other valid flag. It writes only to a temporary directory, which it
   removes at the end, even when an assertion raises.
 - Coverage was measured on Windows with Python 3.13 only. It reports no missed line and no
-  missed branch.
+  missed branch. The `csv.Error` in the except clause of the write step cannot be reached offline,
+  and `OSError` alone would pass the self-test. It stays as a guard, with a `ponytail:` comment.
+- A blank line is a row only in a one-column file, where it is how an export writes a NULL key. In
+  a file with more columns it is skipped. A row of only commas, which a spreadsheet may pad onto
+  a sheet, has an empty key. In the child file it counts as one UNKEYED row. In the parent file it
+  refuses the whole run with exit 3. Delete trailing empty rows from the exports. A one-column
+  file that ends in an extra blank line counts that line as one UNKEYED row.
+- A tab-separated or semicolon-separated file is read as one column and exits 64. It is never
+  clean. Export as comma-delimited CSV.
+- `--out` is not written through a temporary file. A dangling symbolic link named by `--out` is
+  followed, and its target is created. An existing file whose first line equals the findings
+  header counts as an earlier findings file and is replaced, so a notes file that holds only that
+  line would be overwritten. A hard link to an input table is refused only because that table's
+  header differs from the findings header. An existing empty special file such as `/dev/null` or
+  `NUL` is accepted as an empty file, and the findings then go nowhere.
+- The findings file uses LF line endings on every platform. The self-test pins this.
+- With an empty child table, `--out --apply` still writes a header-only findings file while the
+  exit code is 4. A job that reads only the file sees zero findings. Check the exit code first.
+- The tool prints the raw text of the key column and the row id column to stdout, and with
+  `--apply` to `--out`. A wrong `--child-field` can echo another column, such as a URL with a
+  token in it, at most `--sample` rows per heading on stdout and every row that is not `LINKED`
+  in `--out`. Name only GlobalID, ObjectID and attachment id columns.
+- A row id that holds terminal escape sequences or control characters is printed unescaped. The
+  key itself is shown with `%a`. Read the output of an untrusted CSV in a pipe or a file, not in
+  a live terminal.
+- A closed stdout pipe, such as `| head -1` on long output, raises `BrokenPipeError`, and the tool
+  exits 70 with a traceback. Treat 70 as "the tool failed", not "the data is bad". A shell with
+  `pipefail` sees 70 and not the real verdict.
+- A GUID with a non-ASCII hyphen, such as an en dash pasted from a document, or one inside a
+  spreadsheet text marker such as a leading apostrophe, is MALFORMED and never matched. The run
+  exits 1 and lists the row for review.
+- The spelling line says "after braces, case or hyphens are normalised" even when the only
+  difference is spaces around the cell, so the reason it gives is wrong in that rare case.
+- A child cell that is not a GUID is printed in the MALFORMED list and written to `--out` as it
+  came.
+- Windows 8.3 short names were not tested, because short name generation is off on the test
+  volume. The `--out` guard rejected case changes, a `./` prefix, forward slashes, a trailing dot,
+  a trailing space and the `::$DATA` stream form against an input table.
+- Timing is one run on one workstation and one server and varies. The 9.7 second Windows figure
+  measured 11.3 s, 11.8 s and 12.0 s on later runs of similar generated data, with the same
+  20,000 planted orphans found. Treat the figures as approximate. No script in this repository
+  generates that data.
+- The reload story in the opening is a composite. What the relationship class does on each delete
+  route was not verified.
+- The Esri page confirms the `__ATTACH` and `__ATTACHREL` names. It does not state the Global IDs
+  default. The lower case claim for .NET `Guid.ToString` comes from observed output, not from the
+  cited page.
+- The GitHub searches were run on 2026-10-22. They show only that those searches found nothing.
 
 ## Contributing
 
