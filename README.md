@@ -74,14 +74,18 @@ PASS  a child table with no rows exits 4, not 0: a failed export looks the same 
 ...
 PASS  --ap is refused with exit 64 and writes nothing, so a prefix of --apply never applies  <-- pinned defect
 ...
+PASS  a text cell that starts with a tab gets one apostrophe in front  <-- pinned defect
+PASS  the raw_key column is guarded when it starts with a carriage return  <-- pinned defect
+PASS  a cell with a bare CR inside it is quoted on every Python, so the record is not split and the file still ends each record with LF  <-- pinned defect
+...
 PASS  a blank line in a one-column child file is an UNKEYED row, not a clean run  <-- pinned defect
 ...
 PASS  importing the module prints nothing and exposes the core
 --------------------------------------------------------------------
-196 assertions, 0 failed
+245 assertions, 0 failed
 ```
 
-The full run prints all 196 assertions. Each `...` line above is where this block is cut.
+The full run prints all 245 assertions. Each `...` line above is where this block is cut.
 
 ## What already exists
 
@@ -124,12 +128,14 @@ Python 3.9 or newer and nothing else. No `arcpy`, no third-party package, no net
 database. Both tables are CSV files, which every table can be exported as. The self-test also
 needs the `sqlite3` module from the standard library. The tool itself does not.
 
-The self-test prints the same 196 assertions, line for line, on Windows (Python 3.13.2) and on
-Ubuntu (Python 3.12.3). `coverage run --branch relorphan.py --self-test` reports 100 percent of
-lines and branches on Windows. Coverage was not measured on Linux, which has no `coverage`
-module. The self-test also ran green on Python 3.9.25 (`uv run --python 3.9 python relorphan.py
---self-test` on the Ubuntu host), with the same 196 assertions. It parses the source with the 3.9
-grammar as well (`ast.parse(..., feature_version=(3, 9))`).
+The self-test prints the same 245 assertions, line for line, on Windows (Python 3.13.2) and on
+Ubuntu (Python 3.12.3). It also ran green with 245 assertions on Python 3.9.25 on Windows
+(`py -V:Astral/CPython3.9.25 relorphan.py --self-test`), and on Ubuntu under Python 3.9, 3.10,
+3.11, 3.12 and 3.13 (`uv run --python <version> python relorphan.py --self-test`). The count
+does not differ between any two of these runs. `coverage run --branch relorphan.py
+--self-test` reports 100 percent of lines and branches (817 statements, 166 branches) on
+Windows with Python 3.13 and on Ubuntu with Python 3.12 (`uv run --with coverage`). The
+self-test also parses the source with the 3.9 grammar (`ast.parse(..., feature_version=(3, 9))`).
 
 ```
 git clone https://github.com/uhsear/relorphan.git
@@ -281,7 +287,9 @@ VERDICT: 2 child row(s) are not attached to a parent.
 ## The findings file
 
 `--out findings.csv --apply` writes one row for every child row that is not `LINKED`, in file
-order. Use `row_id` to select the rows in whatever tool you trust to delete them.
+order. Use `row_id` to select the rows in whatever tool you trust to delete them. Read
+[the formula guard](#the-formula-guard) first: a `row_id` that starts with a formula character
+carries one added apostrophe.
 
 ```
 $ python relorphan.py assets.csv photos.csv --row-id-field ATTACHMENTID --size-field DATA_SIZE --out findings.csv
@@ -302,6 +310,46 @@ csv_line,row_id,raw_key,class,size,reason
 
 `csv_line` is the line the row starts on in the child file. A quoted cell that holds a line
 break, or a blank line, does not move it. The self-test pins both.
+
+### The formula guard
+
+A spreadsheet may run a cell that starts with `=`, `+`, `-`, `@`, a tab or a carriage return as a
+formula. OWASP names these characters in its
+[CSV Injection](https://owasp.org/www-community/attacks/CSV_Injection) page. The ids and keys in
+`--out` come from the input tables, so the tool does not trust them. Every text cell it writes
+that starts with one of those six characters gets one apostrophe in front. This is the same rule
+as `cell()` in xwddiff. The `csv_line` and `size` columns are numbers and are never changed. The
+`class` column holds a fixed word.
+
+This run uses a child table whose ids and keys are formulas. The demo `assets.csv` has only the
+first culvert, so the row for `C0FFEE00-...` is a real orphan:
+
+```
+$ cat photos-formula.csv
+ATTACHMENTID,REL_GLOBALID,ATT_NAME,DATA_SIZE
+1,9f1c2a64-3b7d-4e58-8a01-5c6d7e8f9a0b,c101_a.jpg,2400000
+2,=1+1,c102_a.jpg,1800000
+"=HYPERLINK(""http://x.invalid"",""y"")",{C0FFEE00-1234-4ABC-9DEF-0123456789AB},c999_a.jpg,3500000
+-4,@SUM(1),c104.jpg,1500000
+$ python relorphan.py assets.csv photos-formula.csv --row-id-field ATTACHMENTID --size-field DATA_SIZE --out findings.csv --apply
+...
+wrote findings.csv
+$ cat findings.csv
+csv_line,row_id,raw_key,class,size,reason
+3,2,'=1+1,MALFORMED,1800000,"'=1+1' is not a GUID in the bare, hyphenated, braced or parenthesised form"
+4,"'=HYPERLINK(""http://x.invalid"",""y"")",{C0FFEE00-1234-4ABC-9DEF-0123456789AB},ORPHAN,3500000,no parent row has the GlobalID c0ffee00-1234-4abc-9def-0123456789ab
+5,'-4,'@SUM(1),MALFORMED,1500000,"'@SUM(1)' is not a GUID in the bare, hyphenated, braced or parenthesised form"
+```
+
+The `reason` column of a `MALFORMED` row already starts with the apostrophe of the quoted key, so
+it is not guarded a second time. The report on stdout is not changed, because a terminal does
+not run formulas.
+
+To read the file back, strip exactly one leading apostrophe from `row_id` and `raw_key`, and only
+when a formula character follows it. The self-test does this for each of the six characters and
+checks that the original text returns. This tool does not read its findings file as data. It
+reads only the first line, to decide whether the file may be replaced, and the header has no
+guarded cell. [Limits](#limits) lists what the guard does not cover.
 
 A prefix of the write flag is refused:
 
@@ -373,7 +421,9 @@ found nothing" and "I could not check" are different.
 
 ## What I checked against the documentation
 
-I read these pages on 2026-10-22. Where a page refused the fetch, the table says so.
+I read these pages on 2026-10-22, except the OWASP and Python `csv` rows, which I read on
+2026-11-11. I did not read the older pages again. Where a page refused the fetch, the table
+says so.
 
 | Claim in this README | Source | How it was checked |
 |---|---|---|
@@ -384,6 +434,8 @@ I read these pages on 2026-10-22. Where a page refused the fetch, the table says
 | An attachment table gets a `REL_GLOBALID` field when its parent has a GlobalID field. | [Esri support article 000015632](https://support.esri.com/en/technical-article/000015632) | The page returned 403 to my fetch. I read only a search result summary. Treat it as unverified. |
 | The .NET `Guid` formats are N (32 digits), D (hyphens), B (braces), P (parentheses) and X. | [Guid.ToString](https://learn.microsoft.com/en-us/dotnet/api/system.guid.tostring) | Fetched and read. The page does not say the digits are lower case. That comes from observed output. |
 | SQL Server `uniqueidentifier` is a 16-byte GUID. It has comparison operators. A string longer than 36 characters is cut to 36 on conversion. | [uniqueidentifier](https://learn.microsoft.com/en-us/sql/t-sql/data-types/uniqueidentifier-transact-sql) | Fetched and read. Not run: no SQL Server was available. |
+| A cell that starts with `=`, `+`, `-`, `@`, a tab or a carriage return may be read as a formula. OWASP also lists a line feed and full-width forms, and says Excel may remove quotes or escape characters when a file is saved and opened again. | [OWASP, CSV Injection](https://owasp.org/www-community/attacks/CSV_Injection) (redirects to community.owasp.org) | Fetched and read on 2026-11-11. Not run in a spreadsheet: none was used. |
+| The `csv` writer quotes a field that holds `'\r'` or `'\n'` under `QUOTE_MINIMAL`. | [csv](https://docs.python.org/3/library/csv.html) | Fetched and read on 2026-11-11. The page has no version note, so Python 3.9 and 3.10 were run to find out where it differs. |
 | FME 2019 added a "Strip braces" reader option for geodatabases. | [Safe Software thread](https://community.safe.com/architecture-14/uuid-braces-missing-10436) | Fetched and read. |
 
 I did not verify these, and the tool does not depend on them: what the attachment relationship
@@ -416,6 +468,13 @@ demo transcripts in this README are copies of real runs.
 | A crash exits 70 | Self-test |
 | A character the console cannot show prints as `?` | Self-test, in a child process with `PYTHONIOENCODING=ascii` |
 | The source is ASCII, has no f-string, parses under the 3.9 grammar, imports no network module, and deletes nothing | Self-test, an `ast` walk of its own source |
+| A text cell that starts with `=`, `+`, `-`, `@`, a tab or a carriage return is guarded in `row_id`, `raw_key` and `reason` | Self-test, each character in each column, and the `photos-formula.csv` run above |
+| The `csv_line` and `size` columns stay numbers, and `class` is unchanged | Self-test, including a negative number |
+| One stripped apostrophe returns the original `row_id` and `raw_key` | Self-test, a round trip through `read_csv` for each character |
+| A findings file with guarded cells is still replaceable by a later run | Self-test, the second `--apply` over the same path |
+| A cell with a bare CR does not split a record, on Python 3.9 to 3.13 | Self-test on each version; the plain LF writer fails it on 3.9 and 3.10 |
+| A findings file fed back in as a table reads a tab-led key as `MALFORMED` | Run by hand on 2026-11-11, not in the self-test |
+| No writer call can skip the guard | Self-test, an `ast` walk of its own source |
 | 1,000,000 child rows and 200,000 parent rows | Separate run, see Limits |
 
 The network and credential rules do not apply. The tool opens no socket and reads no credential,
@@ -447,17 +506,32 @@ network module is ever imported.
   file with a NUL byte, UTF-16 included, exits 2 with "line contains NUL". In Excel, save as
   "CSV UTF-8 (Comma delimited)".
 - A cell over 131072 characters exits 2, because that is the csv module's limit.
-- A key that starts with `=`, `+`, `-` or `@` is written to `--out` as it came. Open the file as
-  text, or quote it first. A spreadsheet may read it as a formula.
+- A text cell that starts with `=`, `+`, `-`, `@`, a tab or a carriage return is written to
+  `--out` with one apostrophe in front. OWASP's page now also lists a line feed and the
+  full-width forms of `=`, `+`, `-` and `@`. This tool guards the six characters that the
+  portfolio guards and does not guard those. A cell that starts with a space is not guarded
+  either, and a cell that starts with an apostrophe is left alone. The same page says
+  Excel may remove the quotes or escape characters when a file is saved and opened again,
+  and that no one rule fits every spreadsheet. I did not open the file in Excel or any
+  other spreadsheet, so the guard is checked as text only.
+- The apostrophe is not reversible in one case. A value that began with `'` followed by a
+  formula character, such as `'=1`, is not guarded, and a reader that strips one apostrophe
+  would turn it into `=1`. Strip only `row_id` and `raw_key`. The `reason` column of a
+  `MALFORMED` row starts with an apostrophe of its own.
+- A `row_id` that is a negative number, such as `-4`, is a text cell here and is written as
+  `'-4`. Strip it before you use it as a key. Feeding the findings file back in as an input
+  table is not supported: a key that began with a tab was a valid GlobalID, and with the
+  apostrophe in front it reads as `MALFORMED`.
 - Output files are written in place, not through a temporary file. A failed write can leave a
   partial file, and the exit code is 2. Read the printed `VERDICT`, which is above the error.
 - There is no `--fix` and no delete. Deciding that a photo is not wanted is a decision somebody
   signs for.
 - `--self-test` ignores every other valid flag. It writes only to a temporary directory, which it
   removes at the end, even when an assertion raises.
-- Coverage was measured on Windows with Python 3.13 only. It reports no missed line and no
-  missed branch. The `csv.Error` in the except clause of the write step cannot be reached offline,
-  and `OSError` alone would pass the self-test. It stays as a guard, with a `ponytail:` comment.
+- Coverage was measured on Windows with Python 3.13 and on Ubuntu with Python 3.12, and reports
+  no missed line and no missed branch on both. It was not measured under 3.9 to 3.11. The
+  `csv.Error` in the except clause of the write step cannot be reached offline, and `OSError`
+  alone would pass the self-test. It stays as a guard, with a `ponytail:` comment.
 - A blank line is a row only in a one-column file, where it is how an export writes a NULL key. In
   a file with more columns it is skipped. A row of only commas, which a spreadsheet may pad onto
   a sheet, has an empty key. In the child file it counts as one UNKEYED row. In the parent file it
@@ -471,11 +545,18 @@ network module is ever imported.
   line would be overwritten. A hard link to an input table is refused only because that table's
   header differs from the findings header. An existing empty special file such as `/dev/null` or
   `NUL` is accepted as an empty file, and the findings then go nowhere.
-- The findings file uses LF line endings on every platform. The self-test pins this.
+- The findings file uses LF line endings on every platform. The self-test pins this. The tool
+  writes each record with a CRLF terminator and replaces it with LF, because the `csv` writer
+  on Python 3.9 and 3.10 does not quote a cell that holds a bare CR unless the terminator
+  has one, and an unquoted CR splits the record. Python 3.11 and later quote it. The current
+  [csv documentation](https://docs.python.org/3/library/csv.html) says `QUOTE_MINIMAL` quotes
+  `'\r'`. It gives no version note, so the 3.9 and 3.10 behaviour comes from running the
+  self-test with the plain LF writer on each version: 8 assertions failed on 3.9 and 3.10 and
+  none on 3.11 to 3.13.
 - With an empty child table, `--out --apply` still writes a header-only findings file while the
   exit code is 4. A job that reads only the file sees zero findings. Check the exit code first.
 - The tool prints the raw text of the key column and the row id column to stdout, and with
-  `--apply` to `--out`. A wrong `--child-field` can echo another column, such as a URL with a
+  `--apply` to `--out`, guarded as above. A wrong `--child-field` can echo another column, such as a URL with a
   token in it, at most `--sample` rows per heading on stdout and every row that is not `LINKED`
   in `--out`. Name only GlobalID, ObjectID and attachment id columns.
 - A row id that holds terminal escape sequences or control characters is printed unescaped. The
@@ -489,8 +570,8 @@ network module is ever imported.
   exits 1 and lists the row for review.
 - The spelling line says "after braces, case or hyphens are normalised" even when the only
   difference is spaces around the cell, so the reason it gives is wrong in that rare case.
-- A child cell that is not a GUID is printed in the MALFORMED list and written to `--out` as it
-  came.
+- A child cell that is not a GUID is printed in the MALFORMED list as it came, and written to
+  `--out` as it came, except for the formula guard above.
 - Windows 8.3 short names were not tested, because short name generation is off on the test
   volume. The `--out` guard rejected case changes, a `./` prefix, forward slashes, a trailing dot,
   a trailing space and the `::$DATA` stream form against an input table.

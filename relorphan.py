@@ -29,7 +29,9 @@ and adds up the bytes the orphans hold.
     python relorphan.py parents.csv children.csv --row-id-field ATTACHMENTID --size-field DATA_SIZE
     python relorphan.py parents.csv children.csv --out findings.csv --apply
 
-Nothing is written without --apply, and the tool never deletes a row.
+Nothing is written without --apply, and the tool never deletes a row. A text cell
+in --out that starts with = + - @ tab or CR gets one apostrophe in front, so a
+spreadsheet does not run it as a formula.
 
 Exit codes: 0 every child row has a parent, 1 at least one child row has no
 parent or no readable key, 2 a file could not be read or written, 3 refused
@@ -109,6 +111,11 @@ _DIGITS = re.compile(r"[0-9]{1,18}")
 # The columns --out writes: one row per child row that is not LINKED.
 OUT_COLUMNS = ("csv_line", "row_id", "raw_key", "class", "size", "reason")
 OUT_HEADER = ",".join(OUT_COLUMNS)
+
+# A text cell that starts with one of these may be run as a formula when the
+# findings file is opened in a spreadsheet (OWASP, "CSV Injection"). The cells
+# that come from the input tables are the row id and the raw key.
+FORMULA_STARTS = ("=", "+", "-", "@", "\t", "\r")
 
 Child = collections.namedtuple("Child", "line raw row_id size_text")
 Result = collections.namedtuple("Result", "child key cls size reason")
@@ -451,12 +458,37 @@ def may_replace(path):
     return head == "" or head.rstrip("\r\n") == OUT_HEADER
 
 
+def csv_safe(value):
+    """A cell that a spreadsheet will not run as a formula.
+
+    A text cell that starts with one of FORMULA_STARTS gets one apostrophe in
+    front of it. Anything else, a number included, is returned as it came. A
+    reader of the findings file strips that one apostrophe, and only when a
+    formula character follows it.
+    """
+    if isinstance(value, str) and value.startswith(FORMULA_STARTS):
+        return "'" + value
+    return value
+
+
+def _record(values):
+    """One CSV record that ends in LF.
+
+    The writer is given CRLF as its line terminator because only then does it
+    quote a cell that holds a bare CR on every Python: 3.9 quotes a CR only
+    when the terminator has one, and an unquoted CR splits the record. The
+    CRLF is cut off and replaced by LF.
+    """
+    buffer = io.StringIO()
+    csv.writer(buffer, lineterminator="\r\n").writerow(values)
+    return buffer.getvalue()[:-2] + "\n"
+
+
 def write_findings(path, report):
     with io.open(path, "w", encoding="utf-8", newline="") as handle:
-        writer = csv.writer(handle, lineterminator="\n")
-        writer.writerow(OUT_COLUMNS)
+        handle.write(_record(OUT_COLUMNS))
         for row in findings_rows(report):
-            writer.writerow(row)
+            handle.write(_record([csv_safe(value) for value in row]))
 
 
 # ------------------------------------------------------------------- self-test
@@ -832,6 +864,90 @@ def _self_test(tmp):
     check(findings_rows(plain)[0][4] == "",
           "an unknown size is an empty cell in --out, not a zero")
 
+    # ---- formula injection: a text cell that starts with = + - @ tab or CR
+    leaders = (("=", "an equals sign"), ("+", "a plus sign"),
+               ("-", "a minus sign"), ("@", "an at sign"),
+               ("\t", "a tab"), ("\r", "a carriage return"))
+    check(FORMULA_STARTS == tuple(lead for lead, _ in leaders),
+          "the guard covers the six characters the portfolio guards, and no more")
+    for lead, name in leaders:
+        check(csv_safe(lead + "1+1") == "'" + lead + "1+1",
+              "a text cell that starts with %s gets one apostrophe in front"
+              "  <-- pinned defect" % name)
+    check(csv_safe("abc") == "abc" and csv_safe("") == ""
+          and csv_safe("a=b+c-d@e") == "a=b+c-d@e",
+          "text that does not start with a formula character is returned as "
+          "it came, and so is an empty cell")
+    check(csv_safe(3500000) == 3500000 and csv_safe(0) == 0
+          and csv_safe(-1) == -1 and isinstance(csv_safe(-1), int),
+          "a number is returned as a number, never as text")
+    check(csv_safe("'=1") == "'=1" and csv_safe(" =1") == " =1",
+          "a cell that starts with an apostrophe or a space is not changed, "
+          "which is a documented limit")
+
+    def unguard(text):
+        # What a reader of the findings file does: remove the one apostrophe
+        # the writer added, and only when a formula character follows it.
+        if text[:1] == "'" and text[1:2] in FORMULA_STARTS:
+            return text[1:]
+        return text
+
+    check(unguard("'104'") == "'104'" and unguard("5") == "5"
+          and unguard("") == "" and unguard("'=1") == "=1",
+          "a reader strips the apostrophe only when a formula character "
+          "follows it")
+
+    injected = os.path.join(tmp, "injected.csv")
+    for lead, name in leaders:
+        bad = Report(1, 1, True)
+        bad.results.append(Result(ch(7, lead + "1+1", lead + "7", "10"), None,
+                                  MALFORMED, 10, lead + "reason"))
+        write_findings(injected, bad)
+        header, recs = read_csv(injected)
+        cells = recs[0][1] if len(recs) == 1 else []
+        check(len(cells) == 6 and cells[1] == "'" + lead + "7",
+              "the row_id column is guarded when it starts with %s  "
+              "<-- pinned defect" % name)
+        check(len(cells) == 6 and cells[2] == "'" + lead + "1+1",
+              "the raw_key column is guarded when it starts with %s  "
+              "<-- pinned defect" % name)
+        check(len(cells) == 6 and cells[5] == "'" + lead + "reason",
+              "the reason column is guarded when it starts with %s  "
+              "<-- pinned defect" % name)
+        check(len(cells) == 6 and cells[0] == "7" and cells[3] == MALFORMED
+              and cells[4] == "10",
+              "the csv_line, class and size columns stay as they were when "
+              "the other cells start with %s" % name)
+        check(len(cells) == 6 and unguard(cells[1]) == lead + "7"
+              and unguard(cells[2]) == lead + "1+1",
+              "stripping one apostrophe from row_id and raw_key restores what "
+              "went in, for %s  <-- pinned defect" % name)
+    bad = Report(1, 1, True)
+    bad.results.append(Result(ch(4, "a\rb\r\nc", "x\ry", ""), None,
+                              MALFORMED, None, "r"))
+    write_findings(injected, bad)
+    header, recs = read_csv(injected)
+    check(len(recs) == 1 and recs[0][1] == ["4", "x\ry", "a\rb\r\nc",
+                                            MALFORMED, "", "r"]
+          and read(injected).count(chr(10)) == 3,
+          "a cell with a bare CR inside it is quoted on every Python, so the "
+          "record is not split and the file still ends each record with LF  "
+          "<-- pinned defect")
+    bad = Report(2, 2, True)
+    bad.results.append(Result(ch(2, g1, "-5", "10"), g1, ORPHAN, 10,
+                              "no parent"))
+    bad.results.append(Result(ch(3, "", "", "-5"), None, UNKEYED, None, ""))
+    write_findings(injected, bad)
+    header, recs = read_csv(injected)
+    check(header == list(OUT_COLUMNS) and recs[0][1] == [
+        "2", "'-5", g1, ORPHAN, "10", "no parent"] and recs[1][1] == [
+        "3", "", "", UNKEYED, "", ""],
+          "a numeric size and line stay unquoted numbers, a row id that is a "
+          "negative number is guarded as text, and an empty cell stays empty")
+    check(not any(cell.startswith(FORMULA_STARTS) for _, rec in recs
+                  for cell in rec),
+          "no cell of the findings file starts with a formula character")
+
     # ---- reading a CSV
     check(read_csv(put("empty.csv", "")) == ([], []),
           "an empty file has no header and no rows")
@@ -994,6 +1110,50 @@ def _self_test(tmp):
           and len(again.splitlines()) == 5 and again != written,
           "--out may replace the findings file an earlier run wrote, so a "
           "scheduled job can reuse one path")
+    evil = put("evil.csv",
+               'ATTACHMENTID,REL_GLOBALID\n'
+               '"=HYPERLINK(""http://x.invalid"",""y"")",=1+1\n'
+               "+1,+cmd\n-2,-2+3\n@SUM(1),@a\n\t3,\t4\n"
+               '"\r4","\r5"\n5,%s\n' % g1)
+    evil_out = os.path.join(tmp, "evil-findings.csv")
+    code, out, err = cli(assets, evil, "--row-id-field", "ATTACHMENTID",
+                         "--out", evil_out, "--apply")
+    header, recs = read_csv(evil_out)
+    check(code == 1 and err == "" and len(recs) == 6
+          and recs[0][1][1] == "'=HYPERLINK(\"http://x.invalid\",\"y\")"
+          and recs[0][1][2] == "'=1+1" and recs[4][1][1] == "'\t3"
+          and recs[4][1][2] == "'\t4" and recs[5][1][1] == "'\r4"
+          and recs[5][1][2] == "'\r5",
+          "a findings file written from an input table whose ids and keys "
+          "start with every formula character guards both cells of each row, "
+          "tab and carriage return included  <-- pinned defect")
+    check(not any(cell.startswith(FORMULA_STARTS) for _, rec in recs
+                  for cell in rec)
+          and [unguard("".join(rec[2:3])) for _, rec in recs] ==
+          ["=1+1", "+cmd", "-2+3", "@a", "\t4", "\r5"],
+          "no cell of that file starts with a formula character, and the "
+          "keys read back as they were once one apostrophe is stripped")
+    check("=HYPERLINK" in out and "line 2, id =HYPERLINK" in out,
+          "the stdout report is not changed, only the file is guarded")
+    code, out, err = cli(assets, evil, "--row-id-field", "ATTACHMENTID",
+                         "--out", evil_out, "--apply")
+    check(code == 1 and may_replace(evil_out),
+          "a findings file that holds guarded cells is still an earlier "
+          "findings file, so a scheduled job can write it again")
+    calls = [n for n in ast.walk(ast.parse(read(os.path.abspath(__file__))))
+             if isinstance(n, ast.Call)]
+    writer_calls = [n for n in calls if getattr(n.func, "attr", "")
+                    == "writerow"]
+    record_calls = [n for n in calls if getattr(n.func, "id", "")
+                    == "_record"]
+    guarded = [n for n in record_calls if isinstance(n.args[0], ast.ListComp)
+               and getattr(n.args[0].elt.func, "id", "") == "csv_safe"]
+    check(len(writer_calls) == 1 and len(record_calls) == 2
+          and len(guarded) == 1
+          and getattr(record_calls[0].args[0], "id", "") == "OUT_COLUMNS",
+          "the module has one csv writer call, reached for the header and "
+          "for rows that all pass csv_safe, so a new column cannot skip the "
+          "guard unseen")
     check(_same_file(os.path.join(tmp, "a.csv"), os.path.join(tmp, "b.csv"))
           is False, "two paths with nothing in common are not the same file")
     real_realpath = os.path.realpath
