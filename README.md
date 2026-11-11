@@ -71,6 +71,7 @@ PASS  an empty parent table is refused with exit 3, not reported as eight orphan
 PASS  a parent row with no readable GlobalID refuses the run, because it could be the one an orphan points at  <-- pinned defect
 ...
 PASS  a child table with no rows exits 4, not 0: a failed export looks the same  <-- pinned defect
+PASS  an empty child table with --apply exits 4 and writes no findings file, which would read as zero findings  <-- pinned defect
 ...
 PASS  --ap is refused with exit 64 and writes nothing, so a prefix of --apply never applies  <-- pinned defect
 ...
@@ -84,10 +85,10 @@ PASS  a quote that swallows rows and leaves the field count equal to the header'
 ...
 PASS  importing the module prints nothing and exposes the core
 --------------------------------------------------------------------
-249 assertions, 0 failed
+251 assertions, 0 failed
 ```
 
-The full run prints all 249 assertions. Each `...` line above is where this block is cut.
+The full run prints all 251 assertions. Each `...` line above is where this block is cut.
 
 ## What already exists
 
@@ -130,12 +131,12 @@ Python 3.9 or newer and nothing else. No `arcpy`, no third-party package, no net
 database. Both tables are CSV files, which every table can be exported as. The self-test also
 needs the `sqlite3` module from the standard library. The tool itself does not.
 
-The self-test prints the same 249 assertions, line for line, on Windows (Python 3.13.2) and on
-Ubuntu (Python 3.12.3). It also ran green with 249 assertions on Python 3.9.25 on Windows
+The self-test prints the same 251 assertions, line for line, on Windows (Python 3.13.2) and on
+Ubuntu (Python 3.12.3). It also ran green with 251 assertions on Python 3.9.25 on Windows
 (`py -V:Astral/CPython3.9.25 relorphan.py --self-test`), and on Ubuntu under Python 3.9, 3.10,
 3.11, 3.12 and 3.13 (`uv run --python <version> python relorphan.py --self-test`). The count
 does not differ between any two of these runs. `coverage run --branch relorphan.py
---self-test` reports 100 percent of lines and branches (845 statements, 178 branches) on
+--self-test` reports 100 percent of lines and branches (853 statements, 180 branches) on
 Windows with Python 3.13 and on Ubuntu with Python 3.12 (`uv run --with coverage`). The
 self-test also parses the source with the 3.9 grammar (`ast.parse(..., feature_version=(3, 9))`).
 
@@ -461,13 +462,13 @@ found nothing" and "I could not check" are different.
 
 ## What I checked against the documentation
 
-I read these pages on 2026-10-22, except the OWASP and Python `csv` rows, which I read on
-2026-11-11. I did not read the older pages again. Where a page refused the fetch, the table
+I read these pages on 2026-10-22, except the OWASP, Python `csv` and Esri Enable attachments
+rows, which I read on 2026-11-11. I did not read the older pages again. Where a page refused the fetch, the table
 says so.
 
 | Claim in this README | Source | How it was checked |
 |---|---|---|
-| An attachment table is named with the dataset name plus `__ATTACH`. Its relationship class ends in `__ATTACHREL`. The page does not state a default for the Global IDs option. | [Enable attachments](https://doc.esri.com/en/arcgis-pro/latest/help/data/geodatabases/overview/enable-attachments.html) | Fetched and read. |
+| An attachment table is named with the dataset name plus `__ATTACH`. Its relationship class ends in `__ATTACHREL`. The page says "Global IDs is checked by default, and it is recommended that you leave it checked." It describes the table and class names in words, as the dataset name, a double underscore and the suffix. | [Enable attachments](https://doc.esri.com/en/arcgis-pro/latest/help/data/geodatabases/overview/enable-attachments.html) | Fetched and read again on 2026-11-11. The 2026-10-22 read did not find the default sentence. |
 | Global ID and GUID values are "registry-style strings consisting of 36 characters enclosed in curly brackets". | [Inserting a value into a global ID column in SQL Server](https://desktop.arcgis.com/en/arcmap/latest/manage-data/using-sql-with-gdbs/inserting-a-value-into-a-global-id-column-in-sql-server-using-sql.htm) (ArcMap help) | Fetched and read. |
 | GlobalIDs from an enterprise geodatabase carry braces and capital letters. GlobalIDs from a hosted layer carry neither. | [Global IDs - The More You Know](https://sspinnovations.com/blog/global-ids-the-more-you-know/) | Fetched and read. This is a third-party post. |
 | Esri's own article makes the same point for Portal for ArcGIS and ArcGIS Online. | [Esri support article 000026830](https://support.esri.com/en-us/knowledge-base/how-to-remove-curly-braces-from-the-globalids-in-a-text-000026830) | The page returned 403 to my fetch. I read only a search result summary of it. Treat it as unverified. |
@@ -497,7 +498,7 @@ demo transcripts in this README are copies of real runs.
 | The spelling line counts exactly the rows a raw join gets wrong | Self-test, the assertion that subtracts the findings from the SQLite count |
 | An empty parent table is refused, exit 3 | Self-test; the `assets-empty.csv` run above |
 | A parent row with no readable GlobalID is refused, exit 3 | Self-test; the `assets-hole.csv` run above |
-| An empty child table exits 4 | Self-test; the `photos-empty.csv` run above |
+| An empty child table exits 4 and, with `--apply`, writes no findings file | Self-test; the `photos-empty.csv` run above |
 | A column of ObjectIDs exits 1 with a note | Self-test; the `photos-objectid.csv` run above |
 | The storage line, and a size that cannot be read | Self-test; the demo run |
 | Only `--apply` writes, and a refused run writes nothing | Self-test; the `--out` runs above |
@@ -596,8 +597,8 @@ network module is ever imported.
   self-test with the plain LF writer on each version. On 3.9.25 and 3.10 that run prints no
   `FAIL` line and stops at the bare CR read-back with an uncaught `csv.Error`, so it never prints
   the footer. On 3.11 and later it passes every assertion.
-- With an empty child table, `--out --apply` still writes a header-only findings file while the
-  exit code is 4. A job that reads only the file sees zero findings. Check the exit code first.
+- With an empty child table, `--out --apply` writes nothing and exits 4, as a refused run does,
+  because a header-only file reads as zero findings. The self-test pins this.
 - The tool prints the raw text of the key column and the row id column to stdout, and with
   `--apply` to `--out`, guarded as above. A wrong `--child-field` can echo another column, such as a URL with a
   token in it, at most `--sample` rows per heading on stdout and every row that is not `LINKED`
@@ -625,8 +626,9 @@ network module is ever imported.
   generates that data.
 - The reload story in the opening is a composite. What the relationship class does on each delete
   route was not verified.
-- The Esri page confirms the `__ATTACH` and `__ATTACHREL` names. It does not state the Global IDs
-  default. The lower case claim for .NET `Guid.ToString` comes from observed output, not from the
+- The Esri page confirms the `__ATTACH` and `__ATTACHREL` names and says Global IDs is checked by
+  default when attachments are enabled. The `REL_GLOBALID` default rests on an Esri support article
+  that returned 403 to my fetch. The lower case claim for .NET `Guid.ToString` comes from observed output, not from the
   cited page.
 - The GitHub searches were run on 2026-10-22. They show only that those searches found nothing.
 - A joined record is caught when its field count differs from the header, or when a cell with a
@@ -652,9 +654,18 @@ network module is ever imported.
   with a formula character, because reasons start with a letter or a quote. The self-test checks
   that column with hand-built results, so the guard on it is a safeguard and not a case a real
   input reaches.
-- A run that exits 3 or 64 leaves any earlier file at `--out` untouched, and a run that exits 4
-  replaces it with a header-only file. A job that reads only the file can take a stale file as
-  current. Check the exit code first.
+- A run that exits 3, 4 or 64 leaves any earlier file at `--out` untouched. A job that reads only
+  the file can take a stale file as current. Check the exit code first.
+- A byte order mark (U+FEFF) or another invisible character at the start of a `row_id` or
+  `raw_key` cell is not guarded. A spreadsheet does not read those as the start of a formula.
+- A file with no bytes at all, as either table, exits 64 with "no column named", not 3 or 4. It is
+  never clean. A job should treat any non-zero code other than 1 as the tool failing.
+- A quoted cell whose later line splits into as many comma fields as the header is refused as a
+  possible joined row, even when it is only prose.
+- `--self-test` exits 1 when an assertion fails, the same code as "findings exist". Run it as a
+  separate step.
+- The findings file is UTF-8 with no byte order mark, so Excel may show non-ASCII row ids as
+  garbled text. Open it through Data, From Text/CSV, and choose UTF-8.
 - `relorphan.py a.csv b.csv --self-test` runs only the self-test, exits 0 and does not compare the
   tables. A job that passes `--self-test` by mistake reads that exit 0 as a clean result.
 

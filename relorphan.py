@@ -1334,6 +1334,16 @@ def _self_test(tmp):
     code, out, err = cli(assets, head)
     check(code == 4 and "NOTHING COMPARED" in out,
           "a child table with no rows exits 4")
+    target3 = os.path.join(tmp, "nothing.csv")
+    code, out, err = cli(assets, head, "--out", target3, "--apply")
+    check(code == 4 and "Nothing compared. %s was not written" % target3 in out
+          and not os.path.exists(target3),
+          "an empty child table with --apply exits 4 and writes no findings "
+          "file, which would read as zero findings  <-- pinned defect")
+    stale = put("stale.csv", OUT_HEADER + "\n")
+    code, out, err = cli(assets, head, "--out", stale, "--apply")
+    check(code == 4 and read(stale) == OUT_HEADER + "\n",
+          "an empty child table leaves an earlier findings file untouched")
     emptyp = put("empty-parent.csv", "GlobalID\n")
     target2 = os.path.join(tmp, "refused.csv")
     code, out, err = cli(emptyp, photos, "--out", target2, "--apply")
@@ -1727,6 +1737,11 @@ def _run(argv):
         elif report.refused:
             print("\nRefused. %s was not written, because nothing was "
                   "classified." % args.out)
+        elif report.child_rows == 0:
+            # A header-only file reads as zero findings, which is a clean
+            # result, and nothing was compared.
+            print("\nNothing compared. %s was not written, because the "
+                  "child table has no rows." % args.out)
         else:
             # A traceback here would exit 1, the code that means "an orphan
             # was found". A write that failed is a different fact.
