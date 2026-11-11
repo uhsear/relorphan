@@ -80,13 +80,14 @@ PASS  a cell with a bare CR inside it is quoted on every Python, so the record i
 ...
 PASS  a blank line in a one-column child file is an UNKEYED row, not a clean run  <-- pinned defect
 PASS  a quote that closes on a later line refuses the run and is not read as one clean row  <-- pinned defect
+PASS  a quote that swallows rows and leaves the field count equal to the header's refuses the run, not exit 0 clean  <-- pinned defect
 ...
 PASS  importing the module prints nothing and exposes the core
 --------------------------------------------------------------------
-246 assertions, 0 failed
+249 assertions, 0 failed
 ```
 
-The full run prints all 246 assertions. Each `...` line above is where this block is cut.
+The full run prints all 249 assertions. Each `...` line above is where this block is cut.
 
 ## What already exists
 
@@ -129,12 +130,12 @@ Python 3.9 or newer and nothing else. No `arcpy`, no third-party package, no net
 database. Both tables are CSV files, which every table can be exported as. The self-test also
 needs the `sqlite3` module from the standard library. The tool itself does not.
 
-The self-test prints the same 246 assertions, line for line, on Windows (Python 3.13.2) and on
-Ubuntu (Python 3.12.3). It also ran green with 246 assertions on Python 3.9.25 on Windows
+The self-test prints the same 249 assertions, line for line, on Windows (Python 3.13.2) and on
+Ubuntu (Python 3.12.3). It also ran green with 249 assertions on Python 3.9.25 on Windows
 (`py -V:Astral/CPython3.9.25 relorphan.py --self-test`), and on Ubuntu under Python 3.9, 3.10,
 3.11, 3.12 and 3.13 (`uv run --python <version> python relorphan.py --self-test`). The count
 does not differ between any two of these runs. `coverage run --branch relorphan.py
---self-test` reports 100 percent of lines and branches (822 statements, 168 branches) on
+--self-test` reports 100 percent of lines and branches (845 statements, 178 branches) on
 Windows with Python 3.13 and on Ubuntu with Python 3.12 (`uv run --with coverage`). The
 self-test also parses the source with the 3.9 grammar (`ast.parse(..., feature_version=(3, 9))`).
 
@@ -305,6 +306,24 @@ $ echo $?
 
 `assets-one.csv` holds only the GlobalID `9f1c2a64-...`. A short row is refused the same way.
 
+A quote can also join rows so that the record has exactly the header's field count. The field
+count then shows nothing. The tool looks inside every cell that holds a line break. If a line
+after the first splits into as many fields as the header has, the cell is taken as joined rows
+and the run is refused with exit 2. A line break in a cell that holds prose passes. This
+`photos-exact-swallow.csv` hides two orphans in one cell:
+
+```
+$ cat photos-exact-swallow.csv
+ATTACHMENTID,REL_GLOBALID,ATT_NAME
+1,9f1c2a64-3b7d-4e58-8a01-5c6d7e8f9a0b,"abc
+2,c0ffee00-1234-4abc-9def-0123456789ab,c200.jpg
+3,c0ffee00-1234-4abc-9def-0123456789ab,c201.jpg"
+$ python relorphan.py assets-one.csv photos-exact-swallow.csv --row-id-field ATTACHMENTID
+error: photos-exact-swallow.csv: the record that starts on line 2 holds a cell with a line break, and the text '2,c0ffee00-1234-4abc-9def-0123456789ab,c200.jpg' inside it has the 3 fields of a row. A stray quote may have joined rows. Fix the file, then run again.
+$ echo $?
+2
+```
+
 ## The findings file
 
 `--out findings.csv --apply` writes one row for every child row that is not `LINKED`, in file
@@ -463,7 +482,8 @@ I did not verify these, and the tool does not depend on them: what the attachmen
 class does when a parent is deleted by each route, whether an append keeps GlobalIDs, that the
 file sits in a blob column named `DATA` with its length in `DATA_SIZE` (I saw this only in
 published service metadata returned by a search), and how SQL Server compares a `uniqueidentifier`
-with a braced string.
+with a braced string. The `REL_GLOBALID` default rests on Esri article 000015632, which I could
+not fetch, so it is unverified as well.
 
 ## What was exercised
 
@@ -484,6 +504,7 @@ demo transcripts in this README are copies of real runs.
 | `--ap`, `--app` and `--appl` are refused with exit 64 | Self-test, in process for all three, and through a child process for `--ap` |
 | `--out` may not be an input table | Self-test; the last run above |
 | A BOM, CRLF, blank lines, and a quoted line break read correctly | Self-test |
+| A quote that joins rows so the field count matches the header is refused, exit 2 | Self-test; the `photos-exact-swallow.csv` run above |
 | Lower case column names from a hosted export match the defaults | Self-test |
 | A file that cannot be read exits 2, and so does a cell over the csv limit and a failed write | Self-test |
 | A crash exits 70 | Self-test |
@@ -493,7 +514,7 @@ demo transcripts in this README are copies of real runs.
 | The `csv_line` and `size` columns stay numbers, and `class` is unchanged | Self-test, including a negative number |
 | One stripped apostrophe returns the original `row_id` and `raw_key` | Self-test, a round trip through `read_csv` for each character |
 | A findings file with guarded cells is still replaceable by a later run | Self-test, the second `--apply` over the same path |
-| A cell with a bare CR does not split a record, on Python 3.9 to 3.13 | Self-test on each version; the plain LF writer fails it on 3.9 and 3.10 |
+| A cell with a bare CR does not split a record, on Python 3.9 to 3.13 | Self-test on each version; the plain LF writer aborts the self-test on 3.9 and 3.10 |
 | A findings file fed back in as a table reads a tab-led key as `MALFORMED` | Run by hand on 2026-11-11, not in the self-test |
 | No writer call can skip the guard | Self-test, an `ast` walk of its own source |
 | 1,000,000 child rows and 200,000 parent rows | Separate run, see Limits |
@@ -572,8 +593,9 @@ network module is ever imported.
   has one, and an unquoted CR splits the record. Python 3.11 and later quote it. The current
   [csv documentation](https://docs.python.org/3/library/csv.html) says `QUOTE_MINIMAL` quotes
   `'\r'`. It gives no version note, so the 3.9 and 3.10 behaviour comes from running the
-  self-test with the plain LF writer on each version: 8 assertions failed on 3.9 and 3.10 and
-  none on 3.11 to 3.13.
+  self-test with the plain LF writer on each version. On 3.9.25 and 3.10 that run prints no
+  `FAIL` line and stops at the bare CR read-back with an uncaught `csv.Error`, so it never prints
+  the footer. On 3.11 and later it passes every assertion.
 - With an empty child table, `--out --apply` still writes a header-only findings file while the
   exit code is 4. A job that reads only the file sees zero findings. Check the exit code first.
 - The tool prints the raw text of the key column and the row id column to stdout, and with
@@ -607,9 +629,25 @@ network module is ever imported.
   default. The lower case claim for .NET `Guid.ToString` comes from observed output, not from the
   cited page.
 - The GitHub searches were run on 2026-10-22. They show only that those searches found nothing.
-- A joined record is caught only when its field count differs from the header. A quote that
-  opens and closes so that the joined record has exactly the header's field count is read as one
-  row, and the rows inside it are lost.
+- A joined record is caught when its field count differs from the header, or when a cell with a
+  line break holds a line that splits into as many fields as the header has. The second check
+  can refuse a real multi-line cell, such as an address with commas, when a line of it has that
+  many fields. Remove the line breaks from the export and run again. It is not applied to a
+  one-column file, where the only cell is the key and a key with a line break is reported as
+  `MALFORMED`. Swallowed text whose lines do not look like rows is not caught.
+- The tool never reads its findings file back as data. It reads only the header line, to decide
+  whether `--out` may be replaced. The "strip one apostrophe on read" round trip is pinned only
+  through a helper in the self-test that uses `read_csv`.
+- The 1,000,000 row timing, the Windows 8.3 short name claim and the `::$DATA` claim come from
+  runs outside the self-test, and no script in this repository generates that data. A later run
+  of 1,000,000 child rows found the same 20,000 planted orphans in 11.5 seconds.
+- A parent file with one blank or all-zero GlobalID refuses the whole run with exit 3, even when
+  the rest of the file is good. This is deliberate. That row could be the parent that an orphan
+  points at.
+- Earlier versions of the self-test could leave `relorphan-selftest-*` folders in the temporary
+  directory after a crash. Delete them by hand. The current version leaves none.
+- Not checked: Windows symbolic link behaviour for `--out`, how a spreadsheet treats the guarded
+  cells, and memory use on Windows.
 - The `reason` column is guarded in the writer, but no real run produces a reason that starts
   with a formula character, because reasons start with a letter or a quote. The self-test checks
   that column with hand-built results, so the guard on it is a safeguard and not a case a real

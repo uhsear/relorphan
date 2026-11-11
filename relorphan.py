@@ -105,7 +105,8 @@ _WRAPPERS = {"{": "}", "(": ")"}
 
 # At most 18 digits, so a byte count fits a 64 bit integer. A longer cell is
 # unreadable on every Python: int() refuses more than 4300 digits on 3.11 and
-# later, and would raise outside the column-error handler.
+# later and on current 3.9 and 3.10 releases (3.9.25 checked), and would raise
+# outside the column-error handler.
 _DIGITS = re.compile(r"[0-9]{1,18}")
 
 # The columns --out writes: one row per child row that is not LINKED.
@@ -358,6 +359,33 @@ def _no_nul(handle):
         yield line
 
 
+_LINE_BREAK = re.compile(r"\r\n|\r|\n")
+
+
+def _quoted(text):
+    return "'%s'" % (text if len(text) <= 60 else text[:57] + "...")
+
+
+def _swallowed_row(record, width):
+    """The first line inside a cell that looks like a row of its own, or "".
+
+    A quote that closes on a later line can join rows into one cell while the
+    joined record still has exactly the header's field count, so the count
+    check cannot see it. A line break inside a cell is legal, so only a line
+    after the first that itself splits into width fields is taken as a joined
+    row. A cell that merely holds several lines of prose passes. A one-column
+    file is skipped: its only cell is the key, and a key with a line break is
+    already reported as malformed.
+    """
+    if width == 1:
+        return ""
+    for cell in record:
+        for line in _LINE_BREAK.split(cell)[1:]:
+            if len(next(csv.reader([line]))) == width:
+                return line
+    return ""
+
+
 def read_csv(path):
     """Return (header, [(start_line, record), ...]).
 
@@ -398,6 +426,14 @@ def read_csv(path):
                     "rows, or the file is cut short. Fix the file, then run "
                     "again." % (path, start, len(record), len(header)))
             else:
+                row_like = _swallowed_row(record, len(header))
+                if row_like:
+                    raise csv.Error(
+                        "%s: the record that starts on line %d holds a cell "
+                        "with a line break, and the text %s inside it has "
+                        "the %d fields of a row. A stray quote may have "
+                        "joined rows. Fix the file, then run again."
+                        % (path, start, _quoted(row_like), len(header)))
                 records.append((start, record))
     return header or [], records
 
@@ -470,9 +506,11 @@ def csv_safe(value):
     """A cell that a spreadsheet will not run as a formula.
 
     A text cell that starts with one of FORMULA_STARTS gets one apostrophe in
-    front of it. Anything else, a number included, is returned as it came. A
-    reader of the findings file strips that one apostrophe, and only when a
-    formula character follows it.
+    front of it. Anything else, a number included, is returned as it came. This
+    tool never reads its findings file back as data. A reader written by
+    somebody else strips that one apostrophe, and only when a formula
+    character follows it; the self-test shows that round trip with its own
+    helper.
     """
     if isinstance(value, str) and value.startswith(FORMULA_STARTS):
         return "'" + value
@@ -1329,6 +1367,30 @@ def _self_test(tmp):
           and "VERDICT" not in out and "clean" not in out,
           "a quote that closes on a later line refuses the run and is not "
           "read as one clean row  <-- pinned defect")
+    exact = put("exact-swallow.csv",
+                "ATTACHMENTID,REL_GLOBALID,ATT_NAME\n"
+                '1,%s,"abc\n2,%s,c200.jpg\n3,%s,c201.jpg"\n'
+                % (g1, gone, gone))
+    code, out, err = cli(assets, exact, "--row-id-field", "ATTACHMENTID")
+    check(code == 2 and "record that starts on line 2 holds a cell with a "
+          "line break" in err and "'2," + gone + ",c200.jpg'" in err
+          and "VERDICT" not in out and "clean" not in out,
+          "a quote that swallows rows and leaves the field count equal to "
+          "the header's refuses the run, not exit 0 clean  <-- pinned defect")
+    closing = put("closing-swallow.csv",
+                  "ATTACHMENTID,REL_GLOBALID,ATT_NAME\n"
+                  '1,%s,"24 in pipe\n2,%s,24"\n' % (g1, gone))
+    code, out, err = cli(assets, closing, "--row-id-field", "ATTACHMENTID")
+    check(code == 2 and "holds a cell with a line break" in err
+          and "VERDICT" not in out,
+          "a swallowed row on the closing line of the cell is refused too"
+          "  <-- pinned defect")
+    longrow = put("long-swallow.csv",
+                  "ATTACHMENTID,REL_GLOBALID,ATT_NAME\n"
+                  '1,%s,"abc\n2,%s,%s"\n' % (g1, gone, "n" * 60))
+    code, out, err = cli(assets, longrow)
+    check(code == 2 and "..." in err and "n" * 40 not in err,
+          "a long swallowed line is cut short in the message")
     crlf = put("crlf.csv", "REL_GLOBALID\r\n%s\r\n" % gone)
     code, out, err = cli(assets, crlf)
     check(code == 1 and "line 2: no parent row" in out,
