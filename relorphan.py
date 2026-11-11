@@ -389,6 +389,14 @@ def read_csv(path):
                 record = [""]
             if header is None:
                 header = record
+            elif len(record) != len(header):
+                # A quote that closes on a later line joins the rows between
+                # into one cell, so those rows would vanish without a trace.
+                raise csv.Error(
+                    "%s: the record that starts on line %d has %d field(s) "
+                    "but the header has %d. A stray quote may have joined "
+                    "rows, or the file is cut short. Fix the file, then run "
+                    "again." % (path, start, len(record), len(header)))
             else:
                 records.append((start, record))
     return header or [], records
@@ -1264,11 +1272,11 @@ def _self_test(tmp):
           and "Traceback" not in err,
           "a size cell of 4301 digits is counted as unreadable and does not "
           "crash the run  <-- pinned defect")
-    trail = put("trail.csv", "REL_GLOBALID,N\n%s,1\n,,\n" % g1)
+    trail = put("trail.csv", "REL_GLOBALID,N\n%s,1\n,\n" % g1)
     code, out, err = cli(assets, trail)
     check(code == 1 and "  UNKEYED    1" in out,
           "a row of empty cells in the child file is an unkeyed row")
-    code, out, err = cli(put("trail-parent.csv", "GlobalID,N\n%s,1\n,,\n"
+    code, out, err = cli(put("trail-parent.csv", "GlobalID,N\n%s,1\n,\n"
                              % g1), photos)
     check(code == 3 and "parent line 3: ''" in out,
           "a row of empty cells in the parent file refuses the run")
@@ -1309,9 +1317,18 @@ def _self_test(tmp):
           in out, "a clean run exits 0")
     short = put("short.csv", "ATTACHMENTID,REL_GLOBALID,DATA_SIZE\n9\n")
     code, out, err = cli(assets, short, "--size-field", "DATA_SIZE")
-    check(code == 1 and "  UNKEYED    1" in out
-          and "1 row(s) had no readable size" in out,
-          "a short row reads as an unkeyed row with no size, not a crash")
+    check(code == 2 and "line 2 has 1 field(s) but the header has 3" in err
+          and "VERDICT" not in out,
+          "a short row refuses the run, since it may be a joined record")
+    swallow = put("swallow.csv",
+                  "ATTACHMENTID,REL_GLOBALID,ATT_NAME\n"
+                  '1,%s,"abc\n2,%s,c200.jpg\n3,%s,c201.jpg",x\n'
+                  % (g1, gone, gone))
+    code, out, err = cli(assets, swallow)
+    check(code == 2 and "line 2 has 4 field(s) but the header has 3" in err
+          and "VERDICT" not in out and "clean" not in out,
+          "a quote that closes on a later line refuses the run and is not "
+          "read as one clean row  <-- pinned defect")
     crlf = put("crlf.csv", "REL_GLOBALID\r\n%s\r\n" % gone)
     code, out, err = cli(assets, crlf)
     check(code == 1 and "line 2: no parent row" in out,

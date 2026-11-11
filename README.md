@@ -79,13 +79,14 @@ PASS  the raw_key column is guarded when it starts with a carriage return  <-- p
 PASS  a cell with a bare CR inside it is quoted on every Python, so the record is not split and the file still ends each record with LF  <-- pinned defect
 ...
 PASS  a blank line in a one-column child file is an UNKEYED row, not a clean run  <-- pinned defect
+PASS  a quote that closes on a later line refuses the run and is not read as one clean row  <-- pinned defect
 ...
 PASS  importing the module prints nothing and exposes the core
 --------------------------------------------------------------------
-245 assertions, 0 failed
+246 assertions, 0 failed
 ```
 
-The full run prints all 245 assertions. Each `...` line above is where this block is cut.
+The full run prints all 246 assertions. Each `...` line above is where this block is cut.
 
 ## What already exists
 
@@ -128,12 +129,12 @@ Python 3.9 or newer and nothing else. No `arcpy`, no third-party package, no net
 database. Both tables are CSV files, which every table can be exported as. The self-test also
 needs the `sqlite3` module from the standard library. The tool itself does not.
 
-The self-test prints the same 245 assertions, line for line, on Windows (Python 3.13.2) and on
-Ubuntu (Python 3.12.3). It also ran green with 245 assertions on Python 3.9.25 on Windows
+The self-test prints the same 246 assertions, line for line, on Windows (Python 3.13.2) and on
+Ubuntu (Python 3.12.3). It also ran green with 246 assertions on Python 3.9.25 on Windows
 (`py -V:Astral/CPython3.9.25 relorphan.py --self-test`), and on Ubuntu under Python 3.9, 3.10,
 3.11, 3.12 and 3.13 (`uv run --python <version> python relorphan.py --self-test`). The count
 does not differ between any two of these runs. `coverage run --branch relorphan.py
---self-test` reports 100 percent of lines and branches (817 statements, 166 branches) on
+--self-test` reports 100 percent of lines and branches (822 statements, 168 branches) on
 Windows with Python 3.13 and on Ubuntu with Python 3.12 (`uv run --with coverage`). The
 self-test also parses the source with the 3.9 grammar (`ast.parse(..., feature_version=(3, 9))`).
 
@@ -284,6 +285,26 @@ rows whose key is not a GUID, not checked:
 VERDICT: 2 child row(s) are not attached to a parent.
 ```
 
+A table with a row whose field count differs from its header is refused with exit 2, before any
+comparison. The usual cause is a quote that opens in one cell and closes on a later line. The
+`csv` reader then joins the rows in between into one cell, and those child rows would not exist
+for the rest of the run. This `photos-swallow.csv` holds three photo rows, two of which point at
+a parent that does not exist:
+
+```
+$ cat photos-swallow.csv
+ATTACHMENTID,REL_GLOBALID,ATT_NAME
+1,9f1c2a64-3b7d-4e58-8a01-5c6d7e8f9a0b,"abc
+2,c0ffee00-1234-4abc-9def-0123456789ab,c200.jpg
+3,c0ffee00-1234-4abc-9def-0123456789ab,c201.jpg",x
+$ python relorphan.py assets-one.csv photos-swallow.csv --row-id-field ATTACHMENTID
+error: photos-swallow.csv: the record that starts on line 2 has 4 field(s) but the header has 3. A stray quote may have joined rows, or the file is cut short. Fix the file, then run again.
+$ echo $?
+2
+```
+
+`assets-one.csv` holds only the GlobalID `9f1c2a64-...`. A short row is refused the same way.
+
 ## The findings file
 
 `--out findings.csv --apply` writes one row for every child row that is not `LINKED`, in file
@@ -318,11 +339,11 @@ formula. OWASP names these characters in its
 [CSV Injection](https://owasp.org/www-community/attacks/CSV_Injection) page. The ids and keys in
 `--out` come from the input tables, so the tool does not trust them. Every text cell it writes
 that starts with one of those six characters gets one apostrophe in front. This is the same rule
-as `cell()` in xwddiff. The `csv_line` and `size` columns are numbers and are never changed. The
+as `cell()` in [xwddiff](https://github.com/uhsear/xwddiff). The `csv_line` and `size` columns are numbers and are never changed. The
 `class` column holds a fixed word.
 
-This run uses a child table whose ids and keys are formulas. The demo `assets.csv` has only the
-first culvert, so the row for `C0FFEE00-...` is a real orphan:
+This run uses a child table whose ids and keys are formulas. No culvert in the demo
+`assets.csv` has the GlobalID `C0FFEE00-...`, so that row is a real orphan:
 
 ```
 $ cat photos-formula.csv
@@ -409,7 +430,7 @@ header. `photos-objectid.csv` is the header and two rows, `1,1,c101_a.jpg,240000
 |---|---|
 | 0 | At least one child row was read, and every child row has a parent. |
 | 1 | At least one child row is an orphan, has no key, or has a key that is not a GUID. |
-| 2 | A file could not be read, or `--out` could not be written. A file with a NUL byte, such as a UTF-16 file, is unreadable. |
+| 2 | A file could not be read, or `--out` could not be written. A file with a NUL byte, such as a UTF-16 file, is unreadable. So is a file with a row whose field count differs from the header. |
 | 3 | Refused. The parent table is empty or has a row with no readable GlobalID. |
 | 4 | Nothing was compared. The child table has no rows. |
 | 64 | Usage error, including a column name that is not in the CSV, an unknown or abbreviated flag, an output path that is an input, and an output path that is an existing file other than an empty file or an earlier findings file. |
@@ -462,7 +483,7 @@ demo transcripts in this README are copies of real runs.
 | Only `--apply` writes, and a refused run writes nothing | Self-test; the `--out` runs above |
 | `--ap`, `--app` and `--appl` are refused with exit 64 | Self-test, in process for all three, and through a child process for `--ap` |
 | `--out` may not be an input table | Self-test; the last run above |
-| A BOM, CRLF, blank lines, a quoted line break and a short row read correctly | Self-test |
+| A BOM, CRLF, blank lines, and a quoted line break read correctly | Self-test |
 | Lower case column names from a hosted export match the defaults | Self-test |
 | A file that cannot be read exits 2, and so does a cell over the csv limit and a failed write | Self-test |
 | A crash exits 70 | Self-test |
@@ -562,7 +583,8 @@ network module is ever imported.
 - A row id that holds terminal escape sequences or control characters is printed unescaped. The
   key itself is shown with `%a`. Read the output of an untrusted CSV in a pipe or a file, not in
   a live terminal.
-- A closed stdout pipe, such as `| head -1` on long output, raises `BrokenPipeError`, and the tool
+- A closed stdout pipe, such as `| head -1` on long output, raises `BrokenPipeError` (on Windows it
+  is `OSError` with `[Errno 22]`), and the tool
   exits 70 with a traceback. Treat 70 as "the tool failed", not "the data is bad". A shell with
   `pipefail` sees 70 and not the real verdict.
 - A GUID with a non-ASCII hyphen, such as an en dash pasted from a document, or one inside a
@@ -585,6 +607,18 @@ network module is ever imported.
   default. The lower case claim for .NET `Guid.ToString` comes from observed output, not from the
   cited page.
 - The GitHub searches were run on 2026-10-22. They show only that those searches found nothing.
+- A joined record is caught only when its field count differs from the header. A quote that
+  opens and closes so that the joined record has exactly the header's field count is read as one
+  row, and the rows inside it are lost.
+- The `reason` column is guarded in the writer, but no real run produces a reason that starts
+  with a formula character, because reasons start with a letter or a quote. The self-test checks
+  that column with hand-built results, so the guard on it is a safeguard and not a case a real
+  input reaches.
+- A run that exits 3 or 64 leaves any earlier file at `--out` untouched, and a run that exits 4
+  replaces it with a header-only file. A job that reads only the file can take a stale file as
+  current. Check the exit code first.
+- `relorphan.py a.csv b.csv --self-test` runs only the self-test, exits 0 and does not compare the
+  tables. A job that passes `--self-test` by mistake reads that exit 0 as a clean result.
 
 ## Contributing
 
@@ -607,6 +641,8 @@ Other single-file tools in this portfolio that pair with this one:
 - [safe-republish](https://github.com/uhsear/safe-republish) - refuse to truncate a feature class
   when the staged replacement fails a plausibility check. A truncate and reload is one way a
   layer loses the parents its photos point at.
+- [xwddiff](https://github.com/uhsear/xwddiff) - classify the diff between two XML workspace
+  documents. Its `cell()` function is the formula guard that `--out` uses here.
 - [fcload](https://github.com/uhsear/fcload) - load a dataset into a geodatabase. Run this tool
   on the attachment table after a reload.
 - [nalmatch](https://github.com/uhsear/nalmatch) - reconcile two tables on an identifier and
