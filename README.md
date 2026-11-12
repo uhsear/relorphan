@@ -92,10 +92,10 @@ PASS  a blank line in a one-column child file is an UNKEYED row, not a clean run
 ...
 PASS  importing the module prints nothing and exposes the core
 --------------------------------------------------------------------
-266 assertions, 0 failed
+269 assertions, 0 failed
 ```
 
-The full run prints all 266 assertions. The lines above are an excerpt of that run, in run
+The full run prints all 269 assertions. The lines above are an excerpt of that run, in run
 order. Each `...` line marks where lines of the run were left out.
 
 ## What already exists
@@ -139,12 +139,12 @@ Python 3.9 or newer and nothing else. No `arcpy`, no third-party package, no net
 database. Both tables are CSV files, which every table can be exported as. The self-test also
 needs the `sqlite3` module from the standard library. The tool itself does not.
 
-The self-test prints the same 266 assertions, line for line, on Windows (Python 3.13.2) and on
-Ubuntu (Python 3.12.3). It also ran green with 266 assertions on Python 3.9.25 on Windows
+The self-test prints the same 269 assertions, line for line, on Windows (Python 3.13.2) and on
+Ubuntu (Python 3.12.3). It also ran green with 269 assertions on Python 3.9.25 on Windows
 (`py -V:Astral/CPython3.9.25 relorphan.py --self-test`), and on Ubuntu under Python 3.9, 3.10,
 3.11, 3.12 and 3.13 (`uv run --python <version> python relorphan.py --self-test`). The count
 does not differ between any two of these runs. `coverage run --branch relorphan.py
---self-test` reports 100 percent of lines and branches (915 statements, 192 branches) on
+--self-test` reports 100 percent of lines and branches (921 statements, 196 branches) on
 Windows with Python 3.13 and on Ubuntu with Python 3.12 (`uv run --with coverage`). The
 self-test also parses the source with the 3.9 grammar (`ast.parse(..., feature_version=(3, 9))`).
 
@@ -177,7 +177,7 @@ python relorphan.py assets.csv photos.csv --out findings.csv --apply
 | `--sample` | `10` | How many rows to list under each heading. `0` lists none. |
 | `--out` | off | Write the child rows that are not `LINKED` to this CSV. Needs `--apply`. |
 | `--apply` | off | Actually write. Without it nothing is written. |
-| `--self-test` | off | Run the assertions and exit. Other flags are ignored. |
+| `--self-test` | off | Run the assertions and exit. Other flags are ignored. Refused with exit 64 when `PARENT` or `CHILD` is given. |
 
 Column names match without regard to case. A hosted layer exports `rel_globalid`, and the default
 finds it. If two columns differ only by case, the run stops with exit 64 and does not guess.
@@ -448,7 +448,7 @@ ATTACHMENTID,REL_GLOBALID,ATT_NAME,DATA_SIZE
 1,9f1c2a64-3b7d-4e58-8a01-5c6d7e8f9a0b,c101_a.jpg,2400000
 2,=1+1,c102_a.jpg,1800000
 "=HYPERLINK(""http://x.invalid"",""y"")",{C0FFEE00-1234-4ABC-9DEF-0123456789AB},c999_a.jpg,3500000
--4,@SUM(1),c104.jpg,1500000
+-4,@A1,c104.jpg,1500000
 $ python relorphan.py assets.csv photos-formula.csv --row-id-field ATTACHMENTID --size-field DATA_SIZE --out findings.csv --apply
 ...
 wrote findings.csv
@@ -456,7 +456,7 @@ $ cat findings.csv
 csv_line,row_id,raw_key,class,size,reason
 3,2,'=1+1,MALFORMED,1800000,"'=1+1' is not a GUID in the bare, hyphenated, braced or parenthesised form"
 4,"'=HYPERLINK(""http://x.invalid"",""y"")",{C0FFEE00-1234-4ABC-9DEF-0123456789AB},ORPHAN,3500000,no parent row has the GlobalID c0ffee00-1234-4abc-9def-0123456789ab
-5,'-4,'@SUM(1),MALFORMED,1500000,"'@SUM(1)' is not a GUID in the bare, hyphenated, braced or parenthesised form"
+5,'-4,'@A1,MALFORMED,1500000,"'@A1' is not a GUID in the bare, hyphenated, braced or parenthesised form"
 ```
 
 The `reason` column of a `MALFORMED` row already starts with the apostrophe of the quoted key, so
@@ -790,8 +790,19 @@ network module is ever imported.
   separate step.
 - The findings file is UTF-8 with no byte order mark, so Excel may show non-ASCII row ids as
   garbled text. Open it through Data, From Text/CSV, and choose UTF-8.
-- `relorphan.py a.csv b.csv --self-test` runs only the self-test, exits 0 and does not compare the
-  tables. A job that passes `--self-test` by mistake reads that exit 0 as a clean result.
+- `relorphan.py a.csv b.csv --self-test` is refused with exit 64, because the self-test compares
+  no tables. The self-test pins this, so a job that passes `--self-test` by mistake cannot read
+  exit 0 as a clean result.
+- A key that is not a GUID and is longer than 6 characters is shown as a count in `raw_key`, not
+  as text. So a formula key such as `@SUM(1)` is masked, not guarded, and the guard on `raw_key`
+  acts only on keys of 6 characters or fewer and on GUID-shaped keys.
+- A first row of letters, digits and underscores is printed in the "no column named" error of a
+  file with no header, because it looks like a column name. Only a cell with punctuation is hidden.
+- `url.csv` in the `--child-field ATT_URL` demo is not listed. To repeat that run, build a file
+  with an `ATT_URL` column in which one cell holds a 44-character URL.
+- The exit code 0 of a child table that was cut at a line break is a limit, not a fix. Without
+  `--expect-child-rows` the tool cannot tell, and the `VERDICT` line says so. Pass the source
+  row count when a job needs the cut to be refused.
 
 ## Contributing
 

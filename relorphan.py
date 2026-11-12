@@ -1266,6 +1266,11 @@ def _self_test(tmp):
           "one table is a usage error")
     code, out, err = cli()
     check(code == 64, "no tables is a usage error")
+    for tables in ((assets, photos), (assets,), ("nosuch.csv", photos)):
+        code, out, err = cli(*(tables + ("--self-test",)))
+        check(code == 64 and "compares no tables" in err and out == "",
+              "--self-test with a table is refused, not an exit 0 that "
+              "compared nothing  <-- pinned defect")
     code, out, err = cli(assets, photos, "--sample", "-1")
     check(code == 64 and "--sample cannot be negative" in err,
           "a negative --sample is a usage error")
@@ -1835,6 +1840,11 @@ def _run(argv):
         return 64 if exc.code == 2 else exc.code
 
     if args.self_test:
+        if args.parent or args.child:
+            print("error: --self-test compares no tables. Run it without "
+                  "PARENT and CHILD, or drop --self-test to compare them.",
+                  file=sys.stderr)
+            return 64
         return self_test()
 
     if not args.parent or not args.child:
