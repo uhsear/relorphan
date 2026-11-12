@@ -82,13 +82,15 @@ PASS  a cell with a bare CR inside it is quoted on every Python, so the record i
 PASS  a blank line in a one-column child file is an UNKEYED row, not a clean run  <-- pinned defect
 PASS  a quote that closes on a later line refuses the run and is not read as one clean row  <-- pinned defect
 PASS  a quote that swallows rows and leaves the field count equal to the header's refuses the run, not exit 0 clean  <-- pinned defect
+PASS  a child table with fewer rows than --expect-child-rows is refused with exit 3, not read as clean  <-- pinned defect
+PASS  a column that holds a URL with a token is not copied to stdout or --out  <-- pinned defect
 ...
 PASS  importing the module prints nothing and exposes the core
 --------------------------------------------------------------------
-251 assertions, 0 failed
+263 assertions, 0 failed
 ```
 
-The full run prints all 251 assertions. Each `...` line above is where this block is cut.
+The full run prints all 263 assertions. Each `...` line above is where this block is cut.
 
 ## What already exists
 
@@ -131,12 +133,12 @@ Python 3.9 or newer and nothing else. No `arcpy`, no third-party package, no net
 database. Both tables are CSV files, which every table can be exported as. The self-test also
 needs the `sqlite3` module from the standard library. The tool itself does not.
 
-The self-test prints the same 251 assertions, line for line, on Windows (Python 3.13.2) and on
-Ubuntu (Python 3.12.3). It also ran green with 251 assertions on Python 3.9.25 on Windows
+The self-test prints the same 263 assertions, line for line, on Windows (Python 3.13.2) and on
+Ubuntu (Python 3.12.3). It also ran green with 263 assertions on Python 3.9.25 on Windows
 (`py -V:Astral/CPython3.9.25 relorphan.py --self-test`), and on Ubuntu under Python 3.9, 3.10,
 3.11, 3.12 and 3.13 (`uv run --python <version> python relorphan.py --self-test`). The count
 does not differ between any two of these runs. `coverage run --branch relorphan.py
---self-test` reports 100 percent of lines and branches (853 statements, 180 branches) on
+--self-test` reports 100 percent of lines and branches (901 statements, 188 branches) on
 Windows with Python 3.13 and on Ubuntu with Python 3.12 (`uv run --with coverage`). The
 self-test also parses the source with the 3.9 grammar (`ast.parse(..., feature_version=(3, 9))`).
 
@@ -165,6 +167,7 @@ python relorphan.py assets.csv photos.csv --out findings.csv --apply
 | `--child-field` | `REL_GLOBALID` | The child column that holds the parent's GlobalID. |
 | `--row-id-field` | off | A child column that names the row, such as `ATTACHMENTID`. Printed in the lists and written to `--out`. |
 | `--size-field` | off | A child column of byte counts, such as `DATA_SIZE`. The bytes held by orphans are added up. |
+| `--expect-child-rows` | off | The row count of the child table at its source. A different count is refused with exit 3. See [A child table cut short](#a-child-table-cut-short). |
 | `--sample` | `10` | How many rows to list under each heading. `0` lists none. |
 | `--out` | off | Write the child rows that are not `LINKED` to this CSV. Needs `--apply`. |
 | `--apply` | off | Actually write. Without it nothing is written. |
@@ -320,10 +323,51 @@ ATTACHMENTID,REL_GLOBALID,ATT_NAME
 2,c0ffee00-1234-4abc-9def-0123456789ab,c200.jpg
 3,c0ffee00-1234-4abc-9def-0123456789ab,c201.jpg"
 $ python relorphan.py assets-one.csv photos-exact-swallow.csv --row-id-field ATTACHMENTID
-error: photos-exact-swallow.csv: the record that starts on line 2 holds a cell with a line break, and the text '2,c0ffee00-1234-4abc-9def-0123456789ab,c200.jpg' inside it has the 3 fields of a row. A stray quote may have joined rows. Fix the file, then run again.
+error: photos-exact-swallow.csv: the record that starts on line 2 holds a cell with a line break, and the text '<47 characters, not a GUID, not shown>' inside it has the 3 fields of a row. A stray quote may have joined rows. Fix the file, then run again.
 $ echo $?
 2
 ```
+
+## A child table cut short
+
+A file that is cut in the middle of a line is caught, because the last record has too few fields
+and the run exits 2. A file that is cut exactly at a line break is a smaller, valid table. The
+tool cannot see the rows that are missing, and they may be the orphans. `photos-cut-boundary.csv`
+is the first three rows of `photos.csv`:
+
+```
+$ python relorphan.py assets.csv photos-cut-boundary.csv --row-id-field ATTACHMENTID
+relorphan: assets.csv 4 row(s), photos-cut-boundary.csv 3 row(s)
+rows classified: 3 of 3
+  LINKED     3
+  ORPHAN     0
+  UNKEYED    0
+  MALFORMED  0
+parents: 4 row(s), every GlobalID readable
+spelling: 2 child row(s) match a parent only after braces, case or hyphens are normalised. A verbatim join calls them orphans.
+
+VERDICT: clean. All 3 child row(s) have a parent. The child file was read to its last line. A file cut at a line break looks like a short table, so check the row count against the source or pass --expect-child-rows.
+$ echo $?
+0
+```
+
+A clean run now says so. Read the row count of the child table at its source, in the table
+properties or a `SELECT COUNT(*)`, and pass it as `--expect-child-rows`. A different count is
+refused with exit 3 and nothing is compared:
+
+```
+$ python relorphan.py assets.csv photos-cut-boundary.csv --row-id-field ATTACHMENTID --expect-child-rows 8
+relorphan: assets.csv 4 row(s), photos-cut-boundary.csv 3 row(s)
+REFUSED   the child table has 3 row(s) and --expect-child-rows says 8. A file cut short at a line break reads as a smaller, valid table, so nothing was compared.
+
+VERDICT: REFUSED
+$ echo $?
+3
+```
+
+When the count matches, the caveat is left out. The tool counts the data rows it parsed. A blank
+line in a file with more than one column is not a row, so a source count that includes such
+lines will not match.
 
 ## The findings file
 
@@ -351,6 +395,32 @@ csv_line,row_id,raw_key,class,size,reason
 
 `csv_line` is the line the row starts on in the child file. A quoted cell that holds a line
 break, or a blank line, does not move it. The self-test pins both.
+
+### A key column that is not a GUID
+
+`--child-field` names the column that is read as a key. If it names the wrong column, the cells
+are not GUIDs, and the tool must not copy them to the screen or to the findings file. A cell of
+12 characters or fewer, or one made only of GUID characters (40 or fewer), is shown whole. Any
+other cell is replaced by its length. `url.csv` has a URL with a token in the `ATT_URL` column:
+
+```
+$ python relorphan.py assets.csv url.csv --child-field ATT_URL --row-id-field ATTACHMENTID --out urlout.csv --apply
+...
+rows whose key is not a GUID, not checked:
+  line 2, id 1: 'x' is not a GUID in the bare, hyphenated, braced or parenthesised form
+  line 3, id 2: '<44 characters, not a GUID, not shown>' is not a GUID in the bare, hyphenated, braced or parenthesised form
+
+VERDICT: 2 child row(s) are not attached to a parent.
+
+wrote urlout.csv
+$ cat urlout.csv
+csv_line,row_id,raw_key,class,size,reason
+2,1,x,MALFORMED,,"'x' is not a GUID in the bare, hyphenated, braced or parenthesised form"
+3,2,"<44 characters, not a GUID, not shown>",MALFORMED,,"'<44 characters, not a GUID, not shown>' is not a GUID in the bare, hyphenated, braced or parenthesised form"
+```
+
+The same rule applies to a parent cell in the refusal list. [Limits](#limits) says what it does
+not cover.
 
 ### The formula guard
 
@@ -448,10 +518,10 @@ header. `photos-objectid.csv` is the header and two rows, `1,1,c101_a.jpg,240000
 
 | Code | Meaning |
 |---|---|
-| 0 | At least one child row was read, and every child row has a parent. |
+| 0 | At least one child row was read, and every child row has a parent. Without `--expect-child-rows` the tool cannot tell a short table from a cut one, and the verdict says so. |
 | 1 | At least one child row is an orphan, has no key, or has a key that is not a GUID. |
 | 2 | A file could not be read, or `--out` could not be written. A file with a NUL byte, such as a UTF-16 file, is unreadable. So is a file with a row whose field count differs from the header. |
-| 3 | Refused. The parent table is empty or has a row with no readable GlobalID. |
+| 3 | Refused. The parent table is empty or has a row with no readable GlobalID, or the child table does not have the row count given with `--expect-child-rows`. |
 | 4 | Nothing was compared. The child table has no rows. |
 | 64 | Usage error, including a column name that is not in the CSV, an unknown or abbreviated flag, an output path that is an input, and an output path that is an existing file other than an empty file or an earlier findings file. |
 | 70 | An unexpected crash. This is a fault in the tool and not a finding. The traceback is on stderr. |
@@ -515,6 +585,10 @@ demo transcripts in this README are copies of real runs.
 | The `csv_line` and `size` columns stay numbers, and `class` is unchanged | Self-test, including a negative number |
 | One stripped apostrophe returns the original `row_id` and `raw_key` | Self-test, a round trip through `read_csv` for each character |
 | A findings file with guarded cells is still replaceable by a later run | Self-test, the second `--apply` over the same path |
+| A clean run says that a table cut at a line break cannot be told from a short one | Self-test; the `photos-cut-boundary.csv` run above |
+| `--expect-child-rows` refuses a different count with exit 3 and writes nothing | Self-test; the `photos-cut-boundary.csv` run above |
+| A key column that holds a URL with a token is not copied to stdout or `--out` | Self-test, in the findings file, the MALFORMED list and the refusal list; run by hand on `url.csv` |
+| A cell over 12 characters that is not GUID shaped is reported by its length | Self-test, `shown_cell` and the CLI runs |
 | A cell with a bare CR does not split a record, on Python 3.9 to 3.13 | Self-test on each version; the plain LF writer aborts the self-test on 3.9 and 3.10 |
 | A findings file fed back in as a table reads a tab-led key as `MALFORMED` | Run by hand on 2026-11-11, not in the self-test |
 | No writer call can skip the guard | Self-test, an `ast` walk of its own source |
@@ -596,13 +670,20 @@ network module is ever imported.
   `'\r'`. It gives no version note, so the 3.9 and 3.10 behaviour comes from running the
   self-test with the plain LF writer on each version. On 3.9.25 and 3.10 that run prints no
   `FAIL` line and stops at the bare CR read-back with an uncaught `csv.Error`, so it never prints
-  the footer. On 3.11 and later it passes every assertion.
+  the footer. On 3.11 and later it passes every assertion. A direct check on Ubuntu, with a
+  writer that uses an LF terminator, left the bare CR unquoted on 3.9.25 and 3.10.21 and quoted
+  it on 3.11.16.
 - With an empty child table, `--out --apply` writes nothing and exits 4, as a refused run does,
   because a header-only file reads as zero findings. The self-test pins this.
-- The tool prints the raw text of the key column and the row id column to stdout, and with
-  `--apply` to `--out`, guarded as above. A wrong `--child-field` can echo another column, such as a URL with a
-  token in it, at most `--sample` rows per heading on stdout and every row that is not `LINKED`
-  in `--out`. Name only GlobalID, ObjectID and attachment id columns.
+- A key cell that is not a GUID is printed whole only when it has 12 characters or fewer (such as
+  `N/A` or `None`), or when it is made only of hex digits, hyphens, braces and parentheses and has
+  40 characters or fewer (a GUID with a typo). Any other cell, such as a URL with a token in it,
+  is replaced by its length in the MALFORMED list, the refusal list, the error for a joined
+  record, and the `raw_key` and `reason` columns of `--out`. The self-test pins this for a
+  `--child-field` that names a URL column and for a parent column that holds a URL. A token of
+  12 characters or fewer, or a token made only of hex digits, would still be printed. The
+  `--row-id-field` column is not masked, because a row id is meant to be shown: name only an
+  ObjectID or attachment id column there.
 - A row id that holds terminal escape sequences or control characters is printed unescaped. The
   key itself is shown with `%a`. Read the output of an untrusted CSV in a pipe or a file, not in
   a live terminal.
@@ -615,11 +696,26 @@ network module is ever imported.
   exits 1 and lists the row for review.
 - The spelling line says "after braces, case or hyphens are normalised" even when the only
   difference is spaces around the cell, so the reason it gives is wrong in that rare case.
-- A child cell that is not a GUID is printed in the MALFORMED list as it came, and written to
-  `--out` as it came, except for the formula guard above.
+- A GUID written in the mixed-endian byte order of a binary layout does not match its text form,
+  so the row reads as an orphan. The run exits 1, and the tool does not say that byte order is a
+  likely cause. A hosted layer and a `uniqueidentifier` column export the text form.
+- A cell that starts with a no-break space is not guarded by the formula rule, like the leading
+  space above.
+- The strip-on-read round trip of the formula guard is pinned only through a helper in the
+  self-test that uses `read_csv`. The tool never reads its findings file as data. It reads the
+  first line only, to decide whether `--out` may be replaced.
+- The large-run timing figures are not reproducible from this repository.
+- A child table cut exactly at a line break reads as a smaller valid table. Without
+  `--expect-child-rows` the tool cannot tell, and a clean verdict carries a sentence that says so.
+  See [A child table cut short](#a-child-table-cut-short). A blank line in a file with more than
+  one column is not a row, so a source count that includes blank lines will not match.
+- `--expect-child-rows` is only as good as the count you give it. A count read from a filtered
+  view, or from the same cut file, agrees with a short table.
 - Windows 8.3 short names were not tested, because short name generation is off on the test
   volume. The `--out` guard rejected case changes, a `./` prefix, forward slashes, a trailing dot,
-  a trailing space and the `::$DATA` stream form against an input table.
+  a trailing space and the `::$DATA` stream form against an input table. Windows path-alias
+  behaviour for `--out`, and `NUL` accepted as an empty file, were observed by hand. The
+  self-test does not cover them and no Microsoft documentation is cited for them.
 - Timing is one run on one workstation and one server and varies. The 9.7 second Windows figure
   measured 11.3 s, 11.8 s and 12.0 s on later runs of similar generated data, with the same
   20,000 planted orphans found. Treat the figures as approximate. No script in this repository

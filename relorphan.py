@@ -33,11 +33,17 @@ Nothing is written without --apply, and the tool never deletes a row. A text cel
 in --out that starts with = + - @ tab or CR gets one apostrophe in front, so a
 spreadsheet does not run it as a formula.
 
+A cell that is not a GUID is printed in full only when it is short or looks
+like a GUID with a typo. A long cell of any other kind is reported by its
+length, so a column that holds a URL or a token is not copied to the screen
+or to --out.
+
 Exit codes: 0 every child row has a parent, 1 at least one child row has no
 parent or no readable key, 2 a file could not be read or written, 3 refused
-(the parent export cannot prove an orphan), 4 nothing was compared (the child
-table has no rows), 64 usage error, 70 an unexpected crash, which is never a
-finding.
+(the parent export cannot prove an orphan, or the child table does not have
+the row count given with --expect-child-rows), 4 nothing was compared (the
+child table has no rows), 64 usage error, 70 an unexpected crash, which is
+never a finding.
 """
 
 from __future__ import print_function
@@ -118,6 +124,12 @@ OUT_HEADER = ",".join(OUT_COLUMNS)
 # that come from the input tables are the row id and the raw key.
 FORMULA_STARTS = ("=", "+", "-", "@", "\t", "\r")
 
+# A cell that is not a GUID is shown whole when it has at most SHOW_SHORT
+# characters (N/A, None, not-a-guid), or when it is only the characters of a
+# GUID, 40 at most (a GUID with a typo). Any other cell may be a URL or a token.
+SHOW_SHORT = 12
+_GUIDISH = re.compile(r"[0-9a-f{}()-]{1,40}", re.IGNORECASE)
+
 Child = collections.namedtuple("Child", "line raw row_id size_text")
 Result = collections.namedtuple("Result", "child key cls size reason")
 
@@ -127,6 +139,9 @@ NO_PARENTS = ("the parent table has no rows, so every child row would look "
 BAD_PARENTS = ("%d parent row(s) have no readable GlobalID. A parent that "
                "cannot be matched could be the one an orphan points at, so "
                "nothing was compared.")
+BAD_CHILD_COUNT = ("the child table has %d row(s) and --expect-child-rows "
+                   "says %d. A file cut short at a line break reads as a "
+                   "smaller, valid table, so nothing was compared.")
 
 
 # ---------------------------------------------------------------- decision core
@@ -155,6 +170,14 @@ def normalize_guid(text):
                      digits[20:])), KEY_OK
 
 
+def shown_cell(text):
+    """The cell as it may be printed or written: whole when short or GUID
+    shaped, otherwise only its length."""
+    if len(text) <= SHOW_SHORT or _GUIDISH.fullmatch(text):
+        return text
+    return "<%d characters, not a GUID, not shown>" % len(text)
+
+
 def to_size(text):
     """A byte count from a cell, or None when it is not a plain integer of at
     most 18 digits."""
@@ -165,10 +188,11 @@ def to_size(text):
 class Report(object):
     """What reconcile found. Plain data, so describe() and gate() stay pure."""
 
-    def __init__(self, parent_rows, child_rows, sized):
+    def __init__(self, parent_rows, child_rows, sized, expect=None):
         self.parent_rows = parent_rows
         self.child_rows = child_rows
         self.sized = sized
+        self.expect = expect
         self.refused = []
         self.bad_parents = []
         self.results = []
@@ -183,13 +207,14 @@ class Report(object):
         return sum(self.count(cls) for cls in FINDINGS)
 
 
-def reconcile(parents, children, sized=False):
+def reconcile(parents, children, sized=False, expect=None):
     """Classify every child row against the parent table.
 
     parents is a list of (csv_line, cell). children is a list of Child. sized
-    says the children carry a size column worth adding up.
+    says the children carry a size column worth adding up. expect is the row
+    count the operator read at the source, or None.
     """
-    report = Report(len(parents), len(children), sized)
+    report = Report(len(parents), len(children), sized, expect)
     spellings = {}
     for line, raw in parents:
         key, state = normalize_guid(raw)
@@ -201,6 +226,8 @@ def reconcile(parents, children, sized=False):
         report.refused.append(NO_PARENTS)
     if report.bad_parents:
         report.refused.append(BAD_PARENTS % len(report.bad_parents))
+    if expect is not None and expect != len(children):
+        report.refused.append(BAD_CHILD_COUNT % (len(children), expect))
     if report.refused:
         return report
 
@@ -220,7 +247,7 @@ def reconcile(parents, children, sized=False):
         elif state == KEY_BAD:
             cls = MALFORMED
             reason = ("%a is not a GUID in the bare, hyphenated, braced or "
-                      "parenthesised form" % child.raw)
+                      "parenthesised form" % shown_cell(child.raw))
         else:
             cls = UNKEYED
             reason = ("the key is blank" if state == KEY_BLANK
@@ -261,7 +288,12 @@ def verdict(report):
             text += (" Check that the parent export is complete before you "
                      "delete anything.")
         return text
-    return "clean. All %d child row(s) have a parent." % report.child_rows
+    text = "clean. All %d child row(s) have a parent." % report.child_rows
+    if report.expect is None:
+        text += (" The child file was read to its last line. A file cut at a "
+                 "line break looks like a short table, so check the row count "
+                 "against the source or pass --expect-child-rows.")
+    return text
 
 
 def _cap(lines, sample):
@@ -294,7 +326,7 @@ def describe(report, sample=DEFAULT_SAMPLE):
     if report.refused:
         for message in report.refused:
             lines.append("REFUSED   %s" % message)
-        listed = ["  parent line %d: %a" % (line, raw)
+        listed = ["  parent line %d: %a" % (line, shown_cell(raw))
                   for line, raw, _ in report.bad_parents]
         lines.extend(_cap(listed, sample))
     else:
@@ -339,7 +371,8 @@ def findings_rows(report):
     rows = []
     for r in report.results:
         if r.cls != LINKED:
-            rows.append((r.child.line, r.child.row_id, r.child.raw, r.cls,
+            rows.append((r.child.line, r.child.row_id,
+                         shown_cell(r.child.raw), r.cls,
                          "" if r.size is None else r.size, r.reason))
     return rows
 
@@ -363,7 +396,7 @@ _LINE_BREAK = re.compile(r"\r\n|\r|\n")
 
 
 def _quoted(text):
-    return "'%s'" % (text if len(text) <= 60 else text[:57] + "...")
+    return "'%s'" % shown_cell(text)
 
 
 def _swallowed_row(record, width):
@@ -1383,7 +1416,8 @@ def _self_test(tmp):
                 % (g1, gone, gone))
     code, out, err = cli(assets, exact, "--row-id-field", "ATTACHMENTID")
     check(code == 2 and "record that starts on line 2 holds a cell with a "
-          "line break" in err and "'2," + gone + ",c200.jpg'" in err
+          "line break" in err and "characters, not a GUID, not shown" in err
+          and "c200.jpg" not in err
           and "VERDICT" not in out and "clean" not in out,
           "a quote that swallows rows and leaves the field count equal to "
           "the header's refuses the run, not exit 0 clean  <-- pinned defect")
@@ -1399,8 +1433,84 @@ def _self_test(tmp):
                   "ATTACHMENTID,REL_GLOBALID,ATT_NAME\n"
                   '1,%s,"abc\n2,%s,%s"\n' % (g1, gone, "n" * 60))
     code, out, err = cli(assets, longrow)
-    check(code == 2 and "..." in err and "n" * 40 not in err,
-          "a long swallowed line is cut short in the message")
+    check(code == 2 and "not shown" in err and "n" * 40 not in err,
+          "a long swallowed line is not copied into the message")
+    # ---- a cut table, and a column that holds secrets
+    cut = put("cut.csv", "ATTACHMENTID,REL_GLOBALID\n1,%s\n2,%s\n"
+              % (g1, g1))
+    full = put("full.csv", "ATTACHMENTID,REL_GLOBALID\n1,%s\n2,%s\n3,%s\n"
+               % (g1, g1, gone))
+    code, out, err = cli(assets, cut, "--row-id-field", "ATTACHMENTID")
+    check(code == 0 and "VERDICT: clean. All 2 child row(s)" in out
+          and "cut at a line break looks like a short table" in out
+          and "--expect-child-rows" in out,
+          "a clean run says that a table cut at a line break reads as clean, "
+          "so the exit 0 never hides that  <-- pinned defect")
+    code, out, err = cli(assets, cut, "--expect-child-rows", "3")
+    check(code == 3 and "VERDICT: REFUSED" in out
+          and "has 2 row(s) and --expect-child-rows says 3" in out
+          and "clean" not in out,
+          "a child table with fewer rows than --expect-child-rows is refused "
+          "with exit 3, not read as clean  <-- pinned defect")
+    code, out, err = cli(assets, full, "--expect-child-rows", "2")
+    check(code == 3 and "has 3 row(s) and --expect-child-rows says 2" in out,
+          "a child table with more rows than --expect-child-rows is refused "
+          "too")
+    code, out, err = cli(assets, cut, "--expect-child-rows", "2")
+    check(code == 0 and "VERDICT: clean. All 2 child row(s) have a parent.\n"
+          in out and "line break looks" not in out,
+          "a matching --expect-child-rows gives a clean run without the "
+          "caveat")
+    code, out, err = cli(assets, full, "--expect-child-rows", "3")
+    check(code == 1 and "  ORPHAN     1" in out,
+          "a matching --expect-child-rows still reports an orphan")
+    code, out, err = cli(assets, cut, "--expect-child-rows", "-1")
+    check(code == 64 and "cannot be negative" in err,
+          "a negative --expect-child-rows is a usage error")
+    rows0 = put("rows0.csv", "ATTACHMENTID,REL_GLOBALID\n")
+    code, out, err = cli(assets, rows0, "--expect-child-rows", "0")
+    check(code == 4, "an empty child table that was expected empty still "
+          "exits 4, nothing compared")
+    refusedout = os.path.join(tmp, "refused-count.csv")
+    code, out, err = cli(assets, cut, "--expect-child-rows", "3", "--out",
+                         refusedout, "--apply")
+    check(code == 3 and not os.path.exists(refusedout),
+          "a count mismatch with --apply writes nothing")
+
+    secret = "https://feed.invalid/a?token=FAKE-TOKEN-0001"
+    urls = put("urls.csv", "ATTACHMENTID,REL_GLOBALID,ATT_URL\n"
+               "1,%s,%s\n2,%s,N/A\n" % (g1, secret, g1))
+    secretout = os.path.join(tmp, "secret.csv")
+    code, out, err = cli(assets, urls, "--child-field", "ATT_URL",
+                         "--row-id-field", "ATTACHMENTID", "--out",
+                         secretout, "--apply")
+    note = "<%d characters, not a GUID, not shown>" % len(secret)
+    check(code == 1 and "FAKE-TOKEN" not in out + err
+          and "FAKE-TOKEN" not in read(secretout)
+          and "token=" not in out + read(secretout),
+          "a column that holds a URL with a token is not copied to stdout or "
+          "--out  <-- pinned defect")
+    check(note in out and note in read(secretout)
+          and "'N/A' is not a GUID" in out,
+          "a cell that is not shown is reported by its length, and a short "
+          "cell is shown whole")
+    parentsecret = put("parent-secret.csv",
+                       "GlobalID\n%s\n%s\n" % (g1, secret))
+    code, out, err = cli(parentsecret, cut)
+    check(code == 3 and "FAKE-TOKEN" not in out + err
+          and "parent line 3: '%s'" % note in out,
+          "a parent column that holds a token is not copied into the refusal "
+          "list  <-- pinned defect")
+    check(shown_cell("N/A") == "N/A" and shown_cell("") == ""
+          and shown_cell("x" * SHOW_SHORT) == "x" * SHOW_SHORT
+          and shown_cell("x" * (SHOW_SHORT + 1)).startswith("<13 char")
+          and shown_cell("{" + g1 + "}") == "{" + g1 + "}"
+          and shown_cell(g1 + "0") == g1 + "0"
+          and shown_cell("g" * 41).startswith("<41 char")
+          and shown_cell("a" * 41).startswith("<41 char"),
+          "a short cell and a GUID-shaped cell of at most 40 characters are "
+          "shown whole, and anything else is reported by its length")
+
     crlf = put("crlf.csv", "REL_GLOBALID\r\n%s\r\n" % gone)
     code, out, err = cli(assets, crlf)
     check(code == 1 and "line 2: no parent row" in out,
@@ -1634,6 +1744,11 @@ def _parse(argv):
     ap.add_argument("--sample", type=int, default=DEFAULT_SAMPLE,
                     help="how many rows to list under each heading "
                          "(default %d)" % DEFAULT_SAMPLE)
+    ap.add_argument("--expect-child-rows", dest="expect_child_rows",
+                    type=int,
+                    help="the row count of the child table at its source. "
+                         "A file cut short at a line break reads as a "
+                         "smaller valid table; a different count is refused.")
     ap.add_argument("--out", help="path for the CSV of child rows that are "
                                   "not LINKED")
     ap.add_argument("--apply", action="store_true",
@@ -1693,6 +1808,10 @@ def _run(argv):
     if args.sample < 0:
         print("error: --sample cannot be negative.", file=sys.stderr)
         return 64
+    if args.expect_child_rows is not None and args.expect_child_rows < 0:
+        print("error: --expect-child-rows cannot be negative.",
+              file=sys.stderr)
+        return 64
     if args.apply and not args.out:
         print("error: --apply needs --out.", file=sys.stderr)
         return 64
@@ -1724,7 +1843,8 @@ def _run(argv):
         print("error: %s" % exc, file=sys.stderr)
         return 2
 
-    report = reconcile(parents, children, bool(args.size_field))
+    report = reconcile(parents, children, bool(args.size_field),
+                       args.expect_child_rows)
     print("relorphan: %s %d row(s), %s %d row(s)"
           % (args.parent, len(parents), args.child, len(children)))
     for line in describe(report, args.sample):
