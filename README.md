@@ -71,26 +71,29 @@ PASS  an empty parent table is refused with exit 3, not reported as eight orphan
 PASS  a parent row with no readable GlobalID refuses the run, because it could be the one an orphan points at  <-- pinned defect
 ...
 PASS  a child table with no rows exits 4, not 0: a failed export looks the same  <-- pinned defect
-PASS  an empty child table with --apply exits 4 and writes no findings file, which would read as zero findings  <-- pinned defect
-...
-PASS  --ap is refused with exit 64 and writes nothing, so a prefix of --apply never applies  <-- pinned defect
 ...
 PASS  a text cell that starts with a tab gets one apostrophe in front  <-- pinned defect
 PASS  the raw_key column is guarded when it starts with a carriage return  <-- pinned defect
 PASS  a cell with a bare CR inside it is quoted on every Python, so the record is not split and the file still ends each record with LF  <-- pinned defect
 ...
-PASS  a blank line in a one-column child file is an UNKEYED row, not a clean run  <-- pinned defect
+PASS  --ap is refused with exit 64 and writes nothing, so a prefix of --apply never applies  <-- pinned defect
+...
+PASS  an empty child table with --apply exits 4 and writes no findings file, which would read as zero findings  <-- pinned defect
+...
 PASS  a quote that closes on a later line refuses the run and is not read as one clean row  <-- pinned defect
 PASS  a quote that swallows rows and leaves the field count equal to the header's refuses the run, not exit 0 clean  <-- pinned defect
 PASS  a child table with fewer rows than --expect-child-rows is refused with exit 3, not read as clean  <-- pinned defect
 PASS  a column that holds a URL with a token is not copied to stdout or --out  <-- pinned defect
+...
+PASS  a blank line in a one-column child file is an UNKEYED row, not a clean run  <-- pinned defect
 ...
 PASS  importing the module prints nothing and exposes the core
 --------------------------------------------------------------------
 263 assertions, 0 failed
 ```
 
-The full run prints all 263 assertions. Each `...` line above is where this block is cut.
+The full run prints all 263 assertions. The lines above are an excerpt of that run, in run
+order. Each `...` line marks where lines of the run were left out.
 
 ## What already exists
 
@@ -684,6 +687,15 @@ network module is ever imported.
   12 characters or fewer, or a token made only of hex digits, would still be printed. The
   `--row-id-field` column is not masked, because a row id is meant to be shown: name only an
   ObjectID or attachment id column there.
+- A key cell that is a valid GUID with spaces or a tab around it, such as a trailing space from a
+  text column, is classified by its real GUID, so it is `LINKED` or `ORPHAN` as it should be.
+  But the orphan list and the `raw_key` column show it as "not a GUID, not shown", because only
+  GUID-shaped text is shown and whitespace is not in that set. Use `row_id` and the `reason`
+  column to find the row. Such a cell is masked before it reaches the formula guard, so a tab-led
+  GUID is masked and not guarded. The guard still applies to every other tab-led or CR-led text.
+- The error for a column that is not found lists the header row as it is in the file, so a file
+  with no header line prints its first data row to stderr. Do not point the tool at a file that
+  holds a URL with a token or another secret.
 - A row id that holds terminal escape sequences or control characters is printed unescaped. The
   key itself is shown with `%a`. Read the output of an untrusted CSV in a pipe or a file, not in
   a live terminal.
