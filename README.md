@@ -85,14 +85,17 @@ PASS  a quote that swallows rows and leaves the field count equal to the header'
 PASS  a child table with fewer rows than --expect-child-rows is refused with exit 3, not read as clean  <-- pinned defect
 PASS  a column that holds a URL with a token is not copied to stdout or --out  <-- pinned defect
 ...
+PASS  a 12 character token and a bare hex token of 40 characters are reported by their length  <-- pinned defect
+PASS  a file with no header line does not echo its first row in the missing-column error  <-- pinned defect
+...
 PASS  a blank line in a one-column child file is an UNKEYED row, not a clean run  <-- pinned defect
 ...
 PASS  importing the module prints nothing and exposes the core
 --------------------------------------------------------------------
-263 assertions, 0 failed
+266 assertions, 0 failed
 ```
 
-The full run prints all 263 assertions. The lines above are an excerpt of that run, in run
+The full run prints all 266 assertions. The lines above are an excerpt of that run, in run
 order. Each `...` line marks where lines of the run were left out.
 
 ## What already exists
@@ -136,12 +139,12 @@ Python 3.9 or newer and nothing else. No `arcpy`, no third-party package, no net
 database. Both tables are CSV files, which every table can be exported as. The self-test also
 needs the `sqlite3` module from the standard library. The tool itself does not.
 
-The self-test prints the same 263 assertions, line for line, on Windows (Python 3.13.2) and on
-Ubuntu (Python 3.12.3). It also ran green with 263 assertions on Python 3.9.25 on Windows
+The self-test prints the same 266 assertions, line for line, on Windows (Python 3.13.2) and on
+Ubuntu (Python 3.12.3). It also ran green with 266 assertions on Python 3.9.25 on Windows
 (`py -V:Astral/CPython3.9.25 relorphan.py --self-test`), and on Ubuntu under Python 3.9, 3.10,
 3.11, 3.12 and 3.13 (`uv run --python <version> python relorphan.py --self-test`). The count
 does not differ between any two of these runs. `coverage run --branch relorphan.py
---self-test` reports 100 percent of lines and branches (901 statements, 188 branches) on
+--self-test` reports 100 percent of lines and branches (915 statements, 192 branches) on
 Windows with Python 3.13 and on Ubuntu with Python 3.12 (`uv run --with coverage`). The
 self-test also parses the source with the 3.9 grammar (`ast.parse(..., feature_version=(3, 9))`).
 
@@ -403,7 +406,8 @@ break, or a blank line, does not move it. The self-test pins both.
 
 `--child-field` names the column that is read as a key. If it names the wrong column, the cells
 are not GUIDs, and the tool must not copy them to the screen or to the findings file. A cell of
-12 characters or fewer, or one made only of GUID characters (40 or fewer), is shown whole. Any
+6 characters or fewer, or one made only of GUID characters that holds a hyphen, brace or
+parenthesis (40 or fewer), is shown whole. Any
 other cell is replaced by its length. `url.csv` has a URL with a token in the `ATT_URL` column:
 
 ```
@@ -544,8 +548,8 @@ says so.
 | An attachment table is named with the dataset name plus `__ATTACH`. Its relationship class ends in `__ATTACHREL`. The page says "Global IDs is checked by default, and it is recommended that you leave it checked." It describes the table and class names in words, as the dataset name, a double underscore and the suffix. | [Enable attachments](https://doc.esri.com/en/arcgis-pro/latest/help/data/geodatabases/overview/enable-attachments.html) | Fetched and read again on 2026-11-11. The 2026-10-22 read did not find the default sentence. |
 | Global ID and GUID values are "registry-style strings consisting of 36 characters enclosed in curly brackets". | [Inserting a value into a global ID column in SQL Server](https://desktop.arcgis.com/en/arcmap/latest/manage-data/using-sql-with-gdbs/inserting-a-value-into-a-global-id-column-in-sql-server-using-sql.htm) (ArcMap help) | Fetched and read. |
 | GlobalIDs from an enterprise geodatabase carry braces and capital letters. GlobalIDs from a hosted layer carry neither. | [Global IDs - The More You Know](https://sspinnovations.com/blog/global-ids-the-more-you-know/) | Fetched and read. This is a third-party post. |
-| Esri's own article makes the same point for Portal for ArcGIS and ArcGIS Online. | [Esri support article 000026830](https://support.esri.com/en-us/knowledge-base/how-to-remove-curly-braces-from-the-globalids-in-a-text-000026830) | The page returned 403 to my fetch. I read only a search result summary of it. Treat it as unverified. |
-| An attachment table gets a `REL_GLOBALID` field when its parent has a GlobalID field. | [Esri support article 000015632](https://support.esri.com/en/technical-article/000015632) | The page returned 403 to my fetch. I read only a search result summary. Treat it as unverified. |
+| Esri's own article makes the same point for Portal for ArcGIS and ArcGIS Online. | [Esri support article 000026830](https://support.esri.com/en-us/knowledge-base/how-to-remove-curly-braces-from-the-globalids-in-a-text-000026830) | Fetched and read on 2026-11-12 (titled "Remove Curly Braces from the GlobalIDs in a text/GUID Field"). It says that in Portal for ArcGIS GlobalIDs are in curly brackets and upper case, while ArcGIS Online generally has no braces and lower case. |
+| An attachment table gets a `REL_GLOBALID` field when its parent has a GlobalID field. | [Esri support article 000015632](https://support.esri.com/en/technical-article/000015632) | Fetched and read on 2026-11-12. Title: "Why Does an Attachment Table of a Feature Class without the GlobalID Field Cause Errors?" It says: "If the feature class has a GlobalID field, the attachment table is created with a REL_GLOBALID field. Otherwise, the attachment table is created with a REL_OBJECTID field from the ObjectID field of the feature class." |
 | The .NET `Guid` formats are N (32 digits), D (hyphens), B (braces), P (parentheses) and X. | [Guid.ToString](https://learn.microsoft.com/en-us/dotnet/api/system.guid.tostring) | Fetched and read. The page does not say the digits are lower case. That comes from observed output. |
 | SQL Server `uniqueidentifier` is a 16-byte GUID. It has comparison operators. A string longer than 36 characters is cut to 36 on conversion. | [uniqueidentifier](https://learn.microsoft.com/en-us/sql/t-sql/data-types/uniqueidentifier-transact-sql) | Fetched and read. Not run: no SQL Server was available. |
 | A cell that starts with `=`, `+`, `-`, `@`, a tab or a carriage return may be read as a formula. OWASP also lists a line feed and full-width forms, and says Excel may remove quotes or escape characters when a file is saved and opened again. | [OWASP, CSV Injection](https://owasp.org/www-community/attacks/CSV_Injection) (redirects to community.owasp.org) | Fetched and read on 2026-11-11. Not run in a spreadsheet: none was used. |
@@ -556,9 +560,7 @@ I did not verify these, and the tool does not depend on them: what the attachmen
 class does when a parent is deleted by each route, whether an append keeps GlobalIDs, that the
 file sits in a blob column named `DATA` with its length in `DATA_SIZE` (I saw this only in
 published service metadata returned by a search), and how SQL Server compares a `uniqueidentifier`
-with a braced string. The `REL_GLOBALID` default rests on Esri article 000015632, which I could
-not fetch, so it is unverified as well.
-
+with a braced string. 
 ## What was exercised
 
 Every claim above was run, not only described. The self-test asserts the behaviour, and the
@@ -583,7 +585,7 @@ demo transcripts in this README are copies of real runs.
 | A file that cannot be read exits 2, and so does a cell over the csv limit and a failed write | Self-test |
 | A crash exits 70 | Self-test |
 | A character the console cannot show prints as `?` | Self-test, in a child process with `PYTHONIOENCODING=ascii` |
-| The source is ASCII, has no f-string, parses under the 3.9 grammar, imports no network module, and deletes nothing | Self-test, an `ast` walk of its own source |
+| The source is ASCII, has no f-string, parses under the 3.9 grammar, imports no network module, and calls no delete | Self-test, an `ast` walk of its own source. The one deleting call it finds is the self-test's own removal of its temporary directory (`shutil.rmtree`). The tool deletes no table row. |
 | A text cell that starts with `=`, `+`, `-`, `@`, a tab or a carriage return is guarded in `row_id`, `raw_key` and `reason` | Self-test, each character in each column, and the `photos-formula.csv` run above |
 | The `csv_line` and `size` columns stay numbers, and `class` is unchanged | Self-test, including a negative number |
 | One stripped apostrophe returns the original `row_id` and `raw_key` | Self-test, a round trip through `read_csv` for each character |
@@ -591,9 +593,11 @@ demo transcripts in this README are copies of real runs.
 | A clean run says that a table cut at a line break cannot be told from a short one | Self-test; the `photos-cut-boundary.csv` run above |
 | `--expect-child-rows` refuses a different count with exit 3 and writes nothing | Self-test; the `photos-cut-boundary.csv` run above |
 | A key column that holds a URL with a token is not copied to stdout or `--out` | Self-test, in the findings file, the MALFORMED list and the refusal list; run by hand on `url.csv` |
-| A cell over 12 characters that is not GUID shaped is reported by its length | Self-test, `shown_cell` and the CLI runs |
+| A cell over 6 characters that is not GUID shaped, and a bare run of 40 hex digits, are reported by their length | Self-test, `shown_cell` and the CLI runs |
+| A file with no header line does not echo its first row in the missing-column error | Self-test; run by hand on a one-row file with a URL token in it |
+| An attachment table keyed on `REL_OBJECTID` is not read and exits 64 with "no column named REL_GLOBALID" | Self-test; run by hand |
 | A cell with a bare CR does not split a record, on Python 3.9 to 3.13 | Self-test on each version; the plain LF writer aborts the self-test on 3.9 and 3.10 |
-| A findings file fed back in as a table reads a tab-led key as `MALFORMED` | Run by hand on 2026-11-11, not in the self-test |
+| A findings file fed back in as a table reads a guarded `raw_key` as `MALFORMED` | Run by hand on 2026-11-11 on a hand-built file with a tab-led key, not on a file the tool wrote, and not in the self-test |
 | No writer call can skip the guard | Self-test, an `ast` walk of its own source |
 | 1,000,000 child rows and 200,000 parent rows | Separate run, see Limits |
 
@@ -640,10 +644,10 @@ network module is ever imported.
   `MALFORMED` row starts with an apostrophe of its own.
 - A `row_id` that is a negative number, such as `-4`, is a text cell here and is written as
   `'-4`. Strip it before you use it as a key. Feeding the findings file back in as an input
-  table is not supported: a key that began with a tab was a valid GlobalID, and with the
-  apostrophe in front it reads as `MALFORMED`.
+  table is not supported: the guarded `raw_key` of a text cell has an apostrophe in front, so it
+  reads as `MALFORMED`.
 - Output files are written in place, not through a temporary file. A failed write can leave a
-  partial file, and the exit code is 2. Read the printed `VERDICT`, which is above the error.
+  partial file, and the exit code is 2. Read the printed `VERDICT`.
 - There is no `--fix` and no delete. Deciding that a photo is not wanted is a decision somebody
   signs for.
 - `--self-test` ignores every other valid flag. It writes only to a temporary directory, which it
@@ -678,27 +682,33 @@ network module is ever imported.
   it on 3.11.16.
 - With an empty child table, `--out --apply` writes nothing and exits 4, as a refused run does,
   because a header-only file reads as zero findings. The self-test pins this.
-- A key cell that is not a GUID is printed whole only when it has 12 characters or fewer (such as
-  `N/A` or `None`), or when it is made only of hex digits, hyphens, braces and parentheses and has
-  40 characters or fewer (a GUID with a typo). Any other cell, such as a URL with a token in it,
-  is replaced by its length in the MALFORMED list, the refusal list, the error for a joined
-  record, and the `raw_key` and `reason` columns of `--out`. The self-test pins this for a
-  `--child-field` that names a URL column and for a parent column that holds a URL. A token of
-  12 characters or fewer, or a token made only of hex digits, would still be printed. The
-  `--row-id-field` column is not masked, because a row id is meant to be shown: name only an
-  ObjectID or attachment id column there.
-- A key cell that is a valid GUID with spaces or a tab around it, such as a trailing space from a
-  text column, is classified by its real GUID, so it is `LINKED` or `ORPHAN` as it should be.
-  But the orphan list and the `raw_key` column show it as "not a GUID, not shown", because only
-  GUID-shaped text is shown and whitespace is not in that set. Use `row_id` and the `reason`
-  column to find the row. Such a cell is masked before it reaches the formula guard, so a tab-led
-  GUID is masked and not guarded. The guard still applies to every other tab-led or CR-led text.
-- The error for a column that is not found lists the header row as it is in the file, so a file
-  with no header line prints its first data row to stderr. Do not point the tool at a file that
-  holds a URL with a token or another secret.
+- A key cell that is not a GUID is printed whole only when it has 6 characters or fewer (such as
+  `N/A` or `None`), or when it is made only of hex digits, hyphens, braces and parentheses, holds
+  at least one hyphen, brace or parenthesis, and has 40 characters or fewer (a GUID with a typo).
+  Any other cell, such as a URL with a token in it or a bare run of hex digits, is replaced by its
+  length in the MALFORMED list, the refusal list, the error for a joined record, and the `raw_key`
+  and `reason` columns of `--out`. The self-test pins this for a `--child-field` that names a URL
+  column, for a parent column that holds a URL, and for a 12 character token and a 40 digit hex
+  token. A token of 6 characters or fewer, or a token written like a GUID (a hyphenated or braced
+  run of hex digits), would still be printed, and so would a valid GUID, because a GUID is the
+  expected value. The `--row-id-field` column is not masked and not capped, because a row id is
+  meant to be shown: a long value or a control character in that column reaches the screen and
+  `--out`. Name only an ObjectID or attachment id column there. A row id that starts with a
+  carriage return makes a live terminal overwrite the start of its own list line, so read output
+  from an untrusted CSV in a file or a pipe.
+- A key cell that is a valid GUID with spaces, a tab or a no-break space around it, such as a
+  trailing space from a text column, is classified by its real GUID, so it is `LINKED` or
+  `ORPHAN` as it should be. But whitespace is not in the shown set, so for an `ORPHAN` row the
+  `raw_key` column says "not a GUID, not shown" although the verdict is right. Read the `reason`
+  column and `row_id` instead. Such a cell is masked before it reaches the formula guard, so the
+  guard never sees a tab-led GUID. The guard still applies to every other tab-led or CR-led text.
+- The error for a column that is not found lists the column names only when each one is a plain
+  field name (letters, digits, underscores, spaces, semicolons). Otherwise it prints the number of
+  columns and asks if the file has a header line. A file with no header line therefore does not
+  echo its first row, and a URL with a token in it stays off the screen. A first row whose cells
+  all look like plain names, such as `a,b,c`, is still printed.
 - A row id that holds terminal escape sequences or control characters is printed unescaped. The
-  key itself is shown with `%a`. Read the output of an untrusted CSV in a pipe or a file, not in
-  a live terminal.
+  key itself is shown with `%a`.
 - A closed stdout pipe, such as `| head -1` on long output, raises `BrokenPipeError` (on Windows it
   is `OSError` with `[Errno 22]`), and the tool
   exits 70 with a traceback. Treat 70 as "the tool failed", not "the data is bad". A shell with
@@ -713,10 +723,6 @@ network module is ever imported.
   likely cause. A hosted layer and a `uniqueidentifier` column export the text form.
 - A cell that starts with a no-break space is not guarded by the formula rule, like the leading
   space above.
-- The strip-on-read round trip of the formula guard is pinned only through a helper in the
-  self-test that uses `read_csv`. The tool never reads its findings file as data. It reads the
-  first line only, to decide whether `--out` may be replaced.
-- The large-run timing figures are not reproducible from this repository.
 - A child table cut exactly at a line break reads as a smaller valid table. Without
   `--expect-child-rows` the tool cannot tell, and a clean verdict carries a sentence that says so.
   See [A child table cut short](#a-child-table-cut-short). A blank line in a file with more than
@@ -727,17 +733,25 @@ network module is ever imported.
   volume. The `--out` guard rejected case changes, a `./` prefix, forward slashes, a trailing dot,
   a trailing space and the `::$DATA` stream form against an input table. Windows path-alias
   behaviour for `--out`, and `NUL` accepted as an empty file, were observed by hand. The
-  self-test does not cover them and no Microsoft documentation is cited for them.
+  self-test does not cover them and no Microsoft documentation is cited for them. The
+  `os.path.realpath`, `normcase`, trailing dot or space and `::$DATA` handling of the `--out`
+  guard is not backed by a cited Microsoft page.
 - Timing is one run on one workstation and one server and varies. The 9.7 second Windows figure
-  measured 11.3 s, 11.8 s and 12.0 s on later runs of similar generated data, with the same
-  20,000 planted orphans found. Treat the figures as approximate. No script in this repository
-  generates that data.
-- The reload story in the opening is a composite. What the relationship class does on each delete
-  route was not verified.
+  measured 11.3 s, 11.8 s and 12.0 s on later runs of similar generated data, and a later run of
+  1,000,000 child rows on Ubuntu took 8.5 s and 634 MB, with the same 20,000 planted orphans found
+  each time. Treat the figures as approximate. They come from runs outside the self-test, as do
+  the Windows 8.3 short name and `::$DATA` observations. No script in this repository generates
+  that data, so none of this is reproducible from the repository, and the Windows memory use was
+  not measured.
+- The reload story in the opening is a composite. Attachment rows that stay behind when a parent
+  is deleted by a SQL delete, or by a truncate and reload, are not checked against Esri
+  documentation, and neither is what the relationship class does on each delete route.
 - The Esri page confirms the `__ATTACH` and `__ATTACHREL` names and says Global IDs is checked by
-  default when attachments are enabled. The `REL_GLOBALID` default rests on an Esri support article
-  that returned 403 to my fetch. The lower case claim for .NET `Guid.ToString` comes from observed output, not from the
-  cited page.
+  default when attachments are enabled. Esri article 000015632 was fetched on 2026-11-12 and says
+  the attachment table gets a `REL_GLOBALID` field when the feature class has a GlobalID field,
+  and a `REL_OBJECTID` field otherwise. The tool reads only `REL_GLOBALID`: a `REL_OBJECTID`
+  attachment table is not read and exits 64 with "no column named REL_GLOBALID". The lower case
+  claim for .NET `Guid.ToString` comes from observed output, not from the cited page.
 - The GitHub searches were run on 2026-10-22. They show only that those searches found nothing.
 - A joined record is caught when its field count differs from the header, or when a cell with a
   line break holds a line that splits into as many fields as the header has. The second check
@@ -746,11 +760,8 @@ network module is ever imported.
   one-column file, where the only cell is the key and a key with a line break is reported as
   `MALFORMED`. Swallowed text whose lines do not look like rows is not caught.
 - The tool never reads its findings file back as data. It reads only the header line, to decide
-  whether `--out` may be replaced. The "strip one apostrophe on read" round trip is pinned only
-  through a helper in the self-test that uses `read_csv`.
-- The 1,000,000 row timing, the Windows 8.3 short name claim and the `::$DATA` claim come from
-  runs outside the self-test, and no script in this repository generates that data. A later run
-  of 1,000,000 child rows found the same 20,000 planted orphans in 11.5 seconds.
+  whether `--out` may be replaced. The "strip one apostrophe on read" round trip of the formula
+  guard is pinned only through a helper in the self-test that uses `read_csv`.
 - A parent file with one blank or all-zero GlobalID refuses the whole run with exit 3, even when
   the rest of the file is good. This is deliberate. That row could be the parent that an orphan
   points at.
@@ -763,7 +774,12 @@ network module is ever imported.
   that column with hand-built results, so the guard on it is a safeguard and not a case a real
   input reaches.
 - A run that exits 3, 4 or 64 leaves any earlier file at `--out` untouched. A job that reads only
-  the file can take a stale file as current. Check the exit code first.
+  the file can take a stale file as current. Check the exit code first. A clean run with
+  `--apply` writes a findings file that holds only the header line, and exits 0.
+- When stdout and stderr go to one log, the "could not write" line (exit 2) can print before the
+  `VERDICT`. On an interactive console the `VERDICT` is above it.
+- A `--child-field` that names a column of integers, such as an ObjectID column, exits 1 with a
+  note, the same code as real orphans. A job can tell the two apart only by the note text.
 - A byte order mark (U+FEFF) or another invisible character at the start of a `row_id` or
   `raw_key` cell is not guarded. A spreadsheet does not read those as the start of a formula.
 - A file with no bytes at all, as either table, exits 64 with "no column named", not 3 or 4. It is

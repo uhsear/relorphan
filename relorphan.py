@@ -125,10 +125,16 @@ OUT_HEADER = ",".join(OUT_COLUMNS)
 FORMULA_STARTS = ("=", "+", "-", "@", "\t", "\r")
 
 # A cell that is not a GUID is shown whole when it has at most SHOW_SHORT
-# characters (N/A, None, not-a-guid), or when it is only the characters of a
-# GUID, 40 at most (a GUID with a typo). Any other cell may be a URL or a token.
-SHOW_SHORT = 12
-_GUIDISH = re.compile(r"[0-9a-f{}()-]{1,40}", re.IGNORECASE)
+# characters (N/A, None, <Null>), or when it is only the characters of a GUID
+# and holds a hyphen, brace or parenthesis, 40 characters at most (a GUID with
+# a typo). A bare run of hex digits is not shown: it may be a token. Any other
+# cell may be a URL or a token.
+SHOW_SHORT = 6
+_GUIDISH = re.compile(r"(?=[^-{}()]*[-{}()])[0-9a-f{}()-]{1,40}",
+                      re.IGNORECASE)
+# A column name that is safe to print: letters, digits, underscores, spaces.
+# A semicolon is allowed so a semicolon delimited header still shows.
+_FIELD_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_ ;]{0,63}")
 
 Child = collections.namedtuple("Child", "line raw row_id size_text")
 Result = collections.namedtuple("Result", "child key cls size reason")
@@ -471,14 +477,25 @@ def read_csv(path):
     return header or [], records
 
 
+def _header_text(header):
+    """The header for an error message. A first line that is a data row, from
+    a file with no header, may hold a token, so it is printed only when every
+    cell reads as a plain field name."""
+    if not header:
+        return "(no columns)"
+    if all(_FIELD_NAME.fullmatch(h.strip()) for h in header):
+        return ", ".join(header)
+    return ("%d column(s) whose names are not plain field names, not shown. "
+            "Does the file have a header line?" % len(header))
+
+
 def column_index(header, name, path):
     """The one column called name, without regard to case. Raises ValueError."""
     wanted = name.strip().lower()
     hits = [i for i, h in enumerate(header) if h.strip().lower() == wanted]
     if not hits:
         raise ValueError("%s: no column named %s. It has: %s"
-                         % (path, name,
-                            ", ".join(header) if header else "(no columns)"))
+                         % (path, name, _header_text(header)))
     if len(hits) > 1:
         raise ValueError("%s: %d columns are named %s, so the tool cannot "
                          "tell which one to read." % (path, len(hits), name))
@@ -1384,9 +1401,9 @@ def _self_test(tmp):
           and "Refused. %s was not written" % target2 in out
           and not os.path.exists(target2),
           "a refused run exits 3 and --apply writes nothing")
-    holes = put("holes.csv", "GlobalID\n%s\n\nnot-a-guid\n" % g1)
+    holes = put("holes.csv", "GlobalID\n%s\n\nnone\n" % g1)
     code, out, err = cli(holes, photos)
-    check(code == 3 and "  parent line 4: 'not-a-guid'" in out,
+    check(code == 3 and "  parent line 4: 'none'" in out,
           "a parent row with no readable id exits 3 and names its line")
     ids = put("objectids.csv", "REL_GLOBALID\n12\n13\n")
     code, out, err = cli(assets, ids)
@@ -1503,13 +1520,32 @@ def _self_test(tmp):
           "list  <-- pinned defect")
     check(shown_cell("N/A") == "N/A" and shown_cell("") == ""
           and shown_cell("x" * SHOW_SHORT) == "x" * SHOW_SHORT
-          and shown_cell("x" * (SHOW_SHORT + 1)).startswith("<13 char")
+          and shown_cell("x" * (SHOW_SHORT + 1)).startswith("<7 char")
           and shown_cell("{" + g1 + "}") == "{" + g1 + "}"
           and shown_cell(g1 + "0") == g1 + "0"
           and shown_cell("g" * 41).startswith("<41 char")
           and shown_cell("a" * 41).startswith("<41 char"),
           "a short cell and a GUID-shaped cell of at most 40 characters are "
           "shown whole, and anything else is reported by its length")
+    check(shown_cell("SECRETTOK123") == "<12 characters, not a GUID, not "
+          "shown>" and shown_cell("0123456789abcdef0123456789abcdef01234567")
+          .startswith("<40 char") and shown_cell("a" * 32).startswith("<32 ")
+          and shown_cell("<Null>") == "<Null>",
+          "a 12 character token and a bare hex token of 40 characters are "
+          "reported by their length  <-- pinned defect")
+    headless = put("headless.csv", "1,%s,https://h.invalid/x?token=ZZTOP"
+                   "SECRET99887766,5\n" % g1)
+    code, out, err = cli(assets, headless, "--child-field", "REL_GLOBALID")
+    check(code == 64 and "ZZTOPSECRET" not in out + err
+          and "no column named REL_GLOBALID" in err
+          and "4 column(s) whose names are not plain field names" in err,
+          "a file with no header line does not echo its first row in the "
+          "missing-column error  <-- pinned defect")
+    relobj = put("relobj.csv", "ATTACHMENTID,REL_OBJECTID\n1,5\n")
+    code, out, err = cli(assets, relobj)
+    check(code == 64 and "no column named REL_GLOBALID" in err
+          and "It has: ATTACHMENTID, REL_OBJECTID" in err,
+          "an attachment table keyed on REL_OBJECTID is not read and exits 64")
 
     crlf = put("crlf.csv", "REL_GLOBALID\r\n%s\r\n" % gone)
     code, out, err = cli(assets, crlf)
