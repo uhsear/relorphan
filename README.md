@@ -586,7 +586,7 @@ demo transcripts in this README are copies of real runs.
 | A crash exits 70 | Self-test |
 | A character the console cannot show prints as `?` | Self-test, in a child process with `PYTHONIOENCODING=ascii` |
 | The source is ASCII, has no f-string, parses under the 3.9 grammar, imports no network module, and calls no delete | Self-test, an `ast` walk of its own source. The one deleting call it finds is the self-test's own removal of its temporary directory (`shutil.rmtree`). The tool deletes no table row. |
-| A text cell that starts with `=`, `+`, `-`, `@`, a tab or a carriage return is guarded in `row_id`, `raw_key` and `reason` | Self-test, each character in each column, and the `photos-formula.csv` run above |
+| A text cell that starts with `=`, `+`, `-`, `@`, a tab or a carriage return is guarded in `row_id`, `raw_key` and `reason` | Self-test, each character in each column. `row_id` and `raw_key`: also the `photos-formula.csv` run above. `reason`: self-test with hand-built results only |
 | The `csv_line` and `size` columns stay numbers, and `class` is unchanged | Self-test, including a negative number |
 | One stripped apostrophe returns the original `row_id` and `raw_key` | Self-test, a round trip through `read_csv` for each character |
 | A findings file with guarded cells is still replaceable by a later run | Self-test, the second `--apply` over the same path |
@@ -778,6 +778,10 @@ network module is ever imported.
   with a formula character, because reasons start with a letter or a quote. The self-test checks
   that column with hand-built results, so the guard on it is a safeguard and not a case a real
   input reaches.
+- An existing `--out` file that the tool cannot open, for example because of a permission error, exits 64 with
+  "already exists and is not an empty file or a findings file from this tool". The message is wrong about the
+  cause. Fix the file permission or choose another path.
+- The self-test's import scan reads only absolute imports. A relative `from . import x` in `relorphan.py` would make the scan raise `AttributeError`. The file has no such import.
 - A run that exits 3, 4 or 64 leaves any earlier file at `--out` untouched. A job that reads only
   the file can take a stale file as current. Check the exit code first. A clean run with
   `--apply` writes a findings file that holds only the header line, and exits 0.
