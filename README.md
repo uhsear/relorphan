@@ -121,7 +121,7 @@ is blank or is not a GUID. The tool reports those 2 under their own classes.
 Other tools meet the same braces problem from the other side. A thread on the Safe Software
 community reports that FME 2019 added a "Strip braces" option to its File and SDE Geodatabase
 readers ([thread](https://community.safe.com/architecture-14/uuid-braces-missing-10436)). That
-fixes the spelling inside an FME workspace. It does not look for orphans.
+fixes the spelling inside an FME workspace. The thread does not describe an orphan check.
 
 A search of GitHub on 2026-10-22 found no repository named `relorphan`. That repository now
 exists under this name, so a search today returns it. The searches
@@ -722,7 +722,8 @@ network module is ever imported.
   so the row reads as an orphan. The run exits 1, and the tool does not say that byte order is a
   likely cause. A hosted layer and a `uniqueidentifier` column export the text form.
 - A cell that starts with a no-break space is not guarded by the formula rule, like the leading
-  space above.
+  space above. So a cell such as ' =1', with a space before the equals sign, reaches the
+  spreadsheet unguarded in `--out`.
 - A child table cut exactly at a line break reads as a smaller valid table. Without
   `--expect-child-rows` the tool cannot tell, and a clean verdict carries a sentence that says so.
   See [A child table cut short](#a-child-table-cut-short). A blank line in a file with more than
@@ -736,6 +737,10 @@ network module is ever imported.
   self-test does not cover them and no Microsoft documentation is cited for them. The
   `os.path.realpath`, `normcase`, trailing dot or space and `::$DATA` handling of the `--out`
   guard is not backed by a cited Microsoft page.
+- The README claims of Ubuntu runs under Python 3.9 to 3.13 through `uv`, the 1,000,000 row
+  timing, and the fetch of Esri article 000015632 were not repeated in the last review. The 269
+  assertion count was repeated on Windows with Python 3.13, 3.12 and 3.9.25 and on Ubuntu with
+  Python 3.12, and it was the same on each.
 - Timing is one run on one workstation and one server and varies. The 9.7 second Windows figure
   measured 11.3 s, 11.8 s and 12.0 s on later runs of similar generated data, and a later run of
   1,000,000 child rows on Ubuntu took 8.5 s and 634 MB, with the same 20,000 planted orphans found
@@ -786,6 +791,8 @@ network module is ever imported.
   never clean. A job should treat any non-zero code other than 1 as the tool failing.
 - A quoted cell whose later line splits into as many comma fields as the header is refused as a
   possible joined row, even when it is only prose.
+- Ctrl-C stops the tool through the interpreter default, not through a verdict code. Treat any
+  exit other than 0 to 4 as a tool failure, not a finding.
 - `--self-test` exits 1 when an assertion fails, the same code as "findings exist". Run it as a
   separate step.
 - The findings file is UTF-8 with no byte order mark, so Excel may show non-ASCII row ids as
@@ -826,7 +833,8 @@ Other single-file tools in this portfolio that pair with this one:
   when the staged replacement fails a plausibility check. A truncate and reload is one way a
   layer loses the parents its photos point at.
 - [xwddiff](https://github.com/uhsear/xwddiff) - classify the diff between two XML workspace
-  documents. Its `cell()` function is the formula guard that `--out` uses here.
+  documents. The formula guard that `--out` uses here follows the same rule as its `cell()`
+  function. This tool has its own copy and does not import xwddiff.
 - [fcload](https://github.com/uhsear/fcload) - load a dataset into a geodatabase. Run this tool
   on the attachment table after a reload.
 - [nalmatch](https://github.com/uhsear/nalmatch) - reconcile two tables on an identifier and
